@@ -252,8 +252,9 @@ INBOX_MAX=10        # default 10; items per run, oldest first
 follows from the type. It stays for rings that hand off nothing.
 
 A type consumed by no ring is published anyway and reported `[orphan]`, the
-same finding a v0.2 contract gets. A `CONSUMES` naming a type no chain declares
-is `[dangling]`.
+same finding a v0.2 contract gets — except an outcome, which is the end of its
+chain and is meant to be consumed by nobody. An `EMITS` or `CONSUMES` naming a
+type no chain declares is `[dangling]`.
 
 ## What the agent sees
 
