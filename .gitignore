@@ -7,3 +7,4 @@ ledger.jsonl
 examples/*/out/
 examples/*/*/out/
 .DS_Store
+docs/superpowers/
