@@ -15,6 +15,12 @@ export function StateBadge({ state }: { state: string | null }) {
   return <Badge variant={VARIANT[state] ?? 'outline'} className="font-mono text-[11px]">{state}</Badge>;
 }
 
+// A zero is the absence of something, not a measurement of it: keep it quiet so
+// the numbers that are not zero are the ones the eye lands on.
+export function Count({ n }: { n: number }) {
+  return <span className={n === 0 ? 'text-muted-foreground' : undefined}>{n}</span>;
+}
+
 export function IdLink({ id, onOpen }: { id: string; onOpen: (id: string) => void }) {
   return (
     <Button variant="link" size="sm" className="h-auto p-0 font-mono text-[12px]" onClick={() => onOpen(id)} title={id}>
@@ -44,7 +50,7 @@ export function Nothing({ title, hint }: { title: string; hint: string }) {
   return (
     <Empty className="py-10">
       <EmptyHeader>
-        <EmptyTitle>{title}</EmptyTitle>
+        <EmptyTitle className="text-base">{title}</EmptyTitle>
         <EmptyDescription>{hint}</EmptyDescription>
       </EmptyHeader>
     </Empty>

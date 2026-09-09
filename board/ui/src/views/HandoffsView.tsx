@@ -4,7 +4,7 @@ import { duration } from '@/lib/format';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { Loading, Nothing, Problem } from './bits';
+import { Count, Loading, Nothing, Problem } from './bits';
 
 export function HandoffsView() {
   const { data, error } = usePoll<Handoffs>('/api/handoffs');
@@ -36,12 +36,12 @@ export function HandoffsView() {
               )}
             </TableCell>
             <TableCell className="font-mono text-xs text-muted-foreground">{t.sink}</TableCell>
-            <TableCell className="text-right tabular-nums">{t.items}</TableCell>
-            <TableCell className="text-right tabular-nums">{t.ready}</TableCell>
-            <TableCell className="text-right tabular-nums">{t.leased}</TableCell>
-            <TableCell className="text-right tabular-nums">{t.accepted}</TableCell>
-            <TableCell className="text-right tabular-nums">{t.rejected}</TableCell>
-            <TableCell className="text-right tabular-nums">{t.dead > 0 ? <span className="text-destructive">{t.dead}</span> : t.dead}</TableCell>
+            <TableCell className="text-right tabular-nums"><Count n={t.items} /></TableCell>
+            <TableCell className="text-right tabular-nums"><Count n={t.ready} /></TableCell>
+            <TableCell className="text-right tabular-nums"><Count n={t.leased} /></TableCell>
+            <TableCell className="text-right tabular-nums"><Count n={t.accepted} /></TableCell>
+            <TableCell className="text-right tabular-nums"><Count n={t.rejected} /></TableCell>
+            <TableCell className="text-right tabular-nums">{t.dead > 0 ? <span className="text-destructive">{t.dead}</span> : <Count n={0} />}</TableCell>
             <TableCell className="text-xs text-muted-foreground">{duration(t.oldestReadySeconds)}</TableCell>
             <TableCell className="text-xs text-muted-foreground">{t.subscribers.join(', ') || '—'}</TableCell>
           </TableRow>

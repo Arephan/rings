@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getJSON, type Trace } from '@/lib/api';
-import { ago } from '@/lib/format';
+import { ago, plural } from '@/lib/format';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
@@ -23,8 +23,10 @@ function Node({ t, onOpen, depth = 0 }: { t: Trace; onOpen: (id: string) => void
       <ul className="space-y-1">
         {t.deliveries.map((d) => (
           <li key={d.ring} className="flex flex-wrap items-center gap-2 text-sm">
-            <span>→ {d.ring}</span><StateBadge state={d.state} />
-            <span className="text-xs text-muted-foreground">{d.attempts} silent attempt(s){d.ended ? ` · ${ago(d.ended)}` : ''}</span>
+            <span className="font-medium">{d.ring}</span><StateBadge state={d.state} />
+            <span className="text-xs text-muted-foreground">
+              {plural(d.attempts, 'silent attempt')}{d.ended ? `, ${ago(d.ended)}` : ''}
+            </span>
             {d.note && <span className="text-xs">— {d.note}</span>}
           </li>
         ))}
@@ -52,13 +54,16 @@ export function TraceSheet({ id, onClose, onOpen }: { id: string | null; onClose
   }, [id]);
   return (
     <Sheet open={!!id} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <SheetContent className="w-full sm:max-w-xl">
-        <SheetHeader>
+      {/* The side variant sets its own max width, so the override has to match its specificity. */}
+      <SheetContent className="w-full data-[side=right]:sm:max-w-xl">
+        <SheetHeader className="pr-12">
           <SheetTitle className="font-mono text-sm break-all">{id}</SheetTitle>
           <SheetDescription>One item, source to outcome. Nothing here is cached.</SheetDescription>
         </SheetHeader>
-        <ScrollArea className="mt-4 h-[80vh] pr-4">
-          {err ? <Problem message={err} /> : !t ? <Loading rows={6} /> : <Node t={root(t)} onOpen={onOpen} />}
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="px-4 pb-4">
+            {err ? <Problem message={err} /> : !t ? <Loading rows={6} /> : <Node t={root(t)} onOpen={onOpen} />}
+          </div>
         </ScrollArea>
       </SheetContent>
     </Sheet>

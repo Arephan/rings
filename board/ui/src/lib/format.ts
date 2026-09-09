@@ -9,6 +9,11 @@ export function ago(iso: string | null, now: number = Date.now()): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+// "1 finding", "2 findings" — a count the reader can read aloud.
+export function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? '' : 's'}`;
+}
+
 export function duration(seconds: number | null): string {
   if (seconds == null) return '—';
   if (seconds < 60) return `${seconds}s`;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ago, duration } from './format';
+import { ago, duration, plural } from './format';
 
 const NOW = Date.parse('2026-09-09T12:00:00Z');
 
@@ -10,6 +10,12 @@ describe('ago', () => {
   it('hours', () => expect(ago('2026-09-09T09:10:00Z', NOW)).toBe('2h ago'));
   it('days', () => expect(ago('2026-09-07T09:10:00Z', NOW)).toBe('2d ago'));
   it('garbage is a dash', () => expect(ago('not a date', NOW)).toBe('—'));
+});
+
+describe('plural', () => {
+  it('zero takes the s', () => expect(plural(0, 'finding')).toBe('0 findings'));
+  it('one does not', () => expect(plural(1, 'finding')).toBe('1 finding'));
+  it('many do', () => expect(plural(4, 'ring')).toBe('4 rings'));
 });
 
 describe('duration', () => {

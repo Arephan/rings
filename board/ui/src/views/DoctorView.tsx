@@ -1,5 +1,6 @@
 import { usePoll } from '@/lib/poll';
 import type { Doctor } from '@/lib/api';
+import { plural } from '@/lib/format';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Loading, Nothing, Problem } from './bits';
@@ -10,10 +11,12 @@ export function DoctorView() {
   const { data, error } = usePoll<Doctor>('/api/doctor');
   if (error) return <Problem message={error} />;
   if (!data) return <Loading />;
-  if (data.findings.length === 0) return <Nothing title="Nothing to report" hint={`${data.rings} rings checked, no findings.`} />;
+  if (data.findings.length === 0) {
+    return <Nothing title="Nothing to report" hint={`Checked ${plural(data.rings, 'ring')} and found nothing to fix.`} />;
+  }
   return (
     <div>
-      <p className="mb-3 text-sm text-muted-foreground">{data.rings} rings, {data.findings.length} findings</p>
+      <p className="mb-3 text-sm text-muted-foreground">{plural(data.rings, 'ring')}, {plural(data.findings.length, 'finding')}</p>
       <Table>
         <TableHeader><TableRow><TableHead>Tag</TableHead><TableHead>Finding</TableHead></TableRow></TableHeader>
         <TableBody>

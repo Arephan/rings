@@ -3,7 +3,7 @@ import type { Goals } from '@/lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Loading, Nothing, Problem } from './bits';
+import { Count, Loading, Nothing, Problem } from './bits';
 
 export function FunnelView() {
   const { data, error } = usePoll<Goals>('/api/goals');
@@ -30,14 +30,16 @@ export function FunnelView() {
                       <TableCell className="font-mono text-xs">
                         {c.type}{c.outcome && <Badge variant="default" className="ml-2 text-[10px]">outcome</Badge>}
                       </TableCell>
-                      <TableCell className="text-right text-lg tabular-nums">{c.items}</TableCell>
+                      <TableCell className="text-right font-medium tabular-nums"><Count n={c.items} /></TableCell>
                       <TableCell className="text-xs text-muted-foreground">{c.producers.join(', ') || <span className="text-destructive">no producer</span>}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             )}
-            {s.rings.length > 0 && <p className="mt-3 text-xs text-muted-foreground">Also serving: {s.rings.join(', ')}</p>}
+            {s.chain.length > 0 && s.rings.length > 0 && (
+              <p className="mt-3 text-xs text-muted-foreground">Also serving: {s.rings.join(', ')}</p>
+            )}
           </CardContent>
         </Card>
       ))}
