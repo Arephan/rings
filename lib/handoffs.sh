@@ -227,12 +227,12 @@ ho_reconcile() {
       [ -f "$m" ] || continue
       [ "$(ho_kv_get "$m" type)" = "$t" ] || continue
       ts=$(ho_kv_get "$m" ts)
-      # RFC3339 UTC strings sort as time; a string compare is exact here. An
-      # item published in the same second as the marker is excluded too: a
-      # ring already subscribed at that instant already got a record from
-      # ho_deliver at publish time, so the boundary second loses nothing.
+      # RFC3339 UTC strings sort as time; a string compare is exact here. The
+      # marker has one-second resolution, and the boundary second counts as
+      # after it: a new subscriber may see one extra item from that second,
+      # while an item whose record was lost can always be reconciled.
       since_ts=$(cat "$since")
-      if [ "$ts" \< "$since_ts" ] || [ "$ts" = "$since_ts" ]; then continue; fi
+      [ "$ts" \< "$since_ts" ] && continue
       id=$(ho_kv_get "$m" id)
       ho_deliver "$id" "$ring"
     done

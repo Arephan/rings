@@ -340,6 +340,7 @@ rm -f "$HO/spool/deliveries/bidder/$T2"
 holib "ho_reconcile bidder \$(date +%s)"
 assert "reconcile recreates a missing delivery" test -f "$HO/spool/deliveries/bidder/$T2"
 mkdir -p "$HO/late"; printf 'CONSUMES="tender.discovered@1"\n' > "$HO/late/ring.conf"
+sleep 1   # the marker has one-second resolution; everything above must be older than it
 holib "ho_reconcile late \$(date +%s)"
 assert "a new subscriber writes its since marker" test -f "$HO/spool/deliveries/late/.since.tender.discovered@1"
 check "$(find "$HO/spool/deliveries/late" -mindepth 1 -maxdepth 1 ! -name '.*' | wc -l | tr -d ' ')" "0" "and gets no items older than the marker"
