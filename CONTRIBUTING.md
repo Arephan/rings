@@ -11,9 +11,10 @@ belongs in your ring's hooks instead — that is what they are for.
 - **bash 3.2.** macOS launchd runs it. No associative arrays, no `${var^^}`, no
   `mapfile`, no `&>>`. `test/smoke.sh` parse-checks every shipped script under
   `/bin/bash` and CI runs on macOS.
-- **No dependencies.** bash, and optionally `curl` and `timeout`. Not jq, not
-  Python, not Node. A loop that runs unattended for months should not be able to
-  break because a package manager changed.
+- **No dependencies in the core.** `bin/` and `lib/` need bash, and optionally
+  `curl`, `timeout`, and `shasum`/`sha256sum`. Not jq, not Python, not Node. The
+  one exception is `board/`, which needs node 18+ and is optional: a fleet with
+  no node has the same data through the `--json` flags.
 - **No daemon.** Nothing that has to be up for a ring to run. `rings run <name>` is
   a single idempotent command and it must stay that way.
 - **Agent-agnostic.** `AGENT` is a shell command. Nothing in here should know which
@@ -23,6 +24,7 @@ belongs in your ring's hooks instead — that is what they are for.
 
 ```bash
 bash test/smoke.sh
+bash test/board.sh   # if you touched board/
 shellcheck -s bash -e SC1090,SC1091,SC2034 bin/rings lib/*.sh test/smoke.sh \
   template/hooks/*.sh examples/*/agent.sh examples/*/*/agent.sh \
   examples/*/*/hooks/*.sh examples/*/types/*/accept.sh

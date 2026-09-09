@@ -25,4 +25,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - run: shellcheck -s bash -e SC1090,SC1091,SC2034 bin/rings lib/*.sh test/smoke.sh template/hooks/*.sh examples/*/agent.sh examples/*/*/agent.sh examples/*/*/hooks/*.sh examples/*/types/*/accept.sh
+      - run: shellcheck -s bash -e SC1090,SC1091,SC2034 bin/rings lib/*.sh test/smoke.sh test/board.sh template/hooks/*.sh examples/*/agent.sh examples/*/*/agent.sh examples/*/*/hooks/*.sh examples/*/types/*/accept.sh
+
+  board:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: board/ui/package-lock.json
+      - run: bash test/board.sh
