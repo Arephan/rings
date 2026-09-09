@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { usePoll } from '@/lib/poll';
 import type { Event, Feed } from '@/lib/api';
-import { ago } from '@/lib/format';
+import { ago, stripPrefix } from '@/lib/format';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { IdLink, Loading, Nothing, Problem, StateBadge } from './bits';
@@ -28,7 +28,9 @@ function Row({ e, onOpen }: { e: Event; onOpen: (id: string) => void }) {
         <StateBadge state={e.kind} />{' '}
         <span className="font-medium">{e.ring}</span>{' '}
         {/* A run's id names a run, not an item, and nothing can trace it: leave it as text. */}
-        <span className="text-muted-foreground">{withIdLink(e.text, e.type ? e.id : null, onOpen)}</span>
+        <span className="text-muted-foreground">
+          {withIdLink(stripPrefix(e.text, e.ring, e.kind), e.type ? e.id : null, onOpen)}
+        </span>
       </div>
     </div>
   );
@@ -43,7 +45,7 @@ export function FeedView({ onOpen }: { onOpen: (id: string) => void }) {
   }
   // Sized off the viewport so the list scrolls inside itself and the page never does.
   return (
-    <ScrollArea className="h-[calc(100dvh-18rem)] min-h-64">
+    <ScrollArea className="h-[calc(100dvh-16rem)] min-h-64">
       <div className="pr-4">
         {data.events.map((e, i) => <Row key={`${e.ts}-${i}`} e={e} onOpen={onOpen} />)}
       </div>

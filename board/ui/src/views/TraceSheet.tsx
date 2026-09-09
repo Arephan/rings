@@ -9,7 +9,7 @@ import { IdLink, Loading, Problem, StateBadge } from './bits';
 
 function Node({ t, onOpen, depth = 0 }: { t: Trace; onOpen: (id: string) => void; depth?: number }) {
   return (
-    <div className="space-y-2" style={{ marginLeft: depth ? 16 : 0 }}>
+    <div className={depth ? 'ml-4 space-y-2' : 'space-y-2'}>
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="outline" className="font-mono text-[11px]">{t.item.type}</Badge>
         <IdLink id={t.item.id} onOpen={onOpen} />
@@ -23,6 +23,8 @@ function Node({ t, onOpen, depth = 0 }: { t: Trace; onOpen: (id: string) => void
       <ul className="space-y-1">
         {t.deliveries.map((d) => (
           <li key={d.ring} className="flex flex-wrap items-center gap-2 text-sm">
+            {/* Which way the item went is part of the line: say it in a word. */}
+            <span className="text-muted-foreground">to</span>
             <span className="font-medium">{d.ring}</span><StateBadge state={d.state} />
             <span className="text-xs text-muted-foreground">
               {plural(d.attempts, 'silent attempt')}{d.ended ? `, ${ago(d.ended)}` : ''}
@@ -54,8 +56,9 @@ export function TraceSheet({ id, onClose, onOpen }: { id: string | null; onClose
   }, [id]);
   return (
     <Sheet open={!!id} onOpenChange={(o) => { if (!o) onClose(); }}>
-      {/* The side variant sets its own max width, so the override has to match its specificity. */}
-      <SheetContent className="w-full data-[side=right]:sm:max-w-xl">
+      {/* The side variant sets its own width and max width, so both overrides have to
+          carry the same data-side condition to win. */}
+      <SheetContent className="data-[side=right]:w-full sm:data-[side=right]:max-w-xl">
         <SheetHeader className="pr-12">
           <SheetTitle className="font-mono text-sm break-all">{id}</SheetTitle>
           <SheetDescription>One item, source to outcome. Nothing here is cached.</SheetDescription>

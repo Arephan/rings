@@ -41,7 +41,7 @@ export function HandoffsView() {
             <TableCell className="text-right tabular-nums"><Count n={t.leased} /></TableCell>
             <TableCell className="text-right tabular-nums"><Count n={t.accepted} /></TableCell>
             <TableCell className="text-right tabular-nums"><Count n={t.rejected} /></TableCell>
-            <TableCell className="text-right tabular-nums">{t.dead > 0 ? <span className="text-destructive">{t.dead}</span> : <Count n={0} />}</TableCell>
+            <TableCell className="text-right tabular-nums">{t.dead > 0 ? <span className="text-destructive">{t.dead}</span> : <Count n={t.dead} />}</TableCell>
             <TableCell className="text-xs text-muted-foreground">{duration(t.oldestReadySeconds)}</TableCell>
             <TableCell className="text-xs text-muted-foreground">{t.subscribers.join(', ') || '—'}</TableCell>
           </TableRow>

@@ -14,6 +14,21 @@ export function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
 
+// A feed line from the CLI opens with "<ring> <kind> …", and the row already states
+// both: a badge for the kind, the ring in bold beside it. Drop that opening so the
+// row says each thing once — but only when it is really there, so a line in any
+// other shape still reads whole.
+export function stripPrefix(text: string, ring: string, kind?: string | null): string {
+  if (!ring || !kind) return text;
+  const head = `${ring} ${kind}`;
+  if (!text.startsWith(head)) return text;
+  const rest = text.slice(head.length);
+  if (rest.startsWith(' · ')) return rest.slice(3);
+  if (rest.startsWith(' ')) return rest.slice(1);
+  // "scoutful published …" is not "scout" followed by anything: leave it alone.
+  return rest.length === 0 ? '' : text;
+}
+
 export function duration(seconds: number | null): string {
   if (seconds == null) return '—';
   if (seconds < 60) return `${seconds}s`;

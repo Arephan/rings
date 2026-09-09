@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # board/test/fixture.sh <empty|demo|stress> <dir> — build a RINGS_HOME to point the board at.
 #
+# One-shot: <dir> is deleted and rebuilt from nothing, so a rerun cannot inherit
+# yesterday's spool. Point it somewhere disposable.
+#
 #   empty   nothing at all: every view renders its empty state.
 #   demo    the handoff demo, run once end to end: one item through the chain.
 #   stress  120 prospects, a backed-up inbox, a halted ring and a ring that
@@ -9,6 +12,7 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 kind="${1:-}"; dir="${2:-}"
 [ -n "$kind" ] && [ -n "$dir" ] || { echo "usage: fixture.sh <empty|demo|stress> <dir>" >&2; exit 2; }
+rm -rf "$dir"
 mkdir -p "$dir"
 export RINGS_HOME="$dir"
 

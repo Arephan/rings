@@ -12,7 +12,12 @@ export function DoctorView() {
   if (error) return <Problem message={error} />;
   if (!data) return <Loading />;
   if (data.findings.length === 0) {
-    return <Nothing title="Nothing to report" hint={`Checked ${plural(data.rings, 'ring')} and found nothing to fix.`} />;
+    // Nothing checked and nothing wrong are different sentences: an empty fleet has
+    // not passed a check, it has not had one.
+    const hint = data.rings === 0
+      ? 'No rings to check yet.'
+      : `Checked ${plural(data.rings, 'ring')} and found nothing to fix.`;
+    return <Nothing title="Nothing to report" hint={hint} />;
   }
   return (
     <div>
