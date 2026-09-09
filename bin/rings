@@ -3,7 +3,7 @@
 # https://github.com/Arephan/rings
 set -uo pipefail
 
-RINGS_VERSION="0.2.0"
+RINGS_VERSION="0.3.0"
 SELF=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 RINGS_HOME="${RINGS_HOME:-$HOME/.rings}"
 

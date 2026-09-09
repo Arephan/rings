@@ -211,15 +211,40 @@ feeds what starts lying to you on day two.
 See [docs/contracts.md](docs/contracts.md) and
 [examples/contract-demo](examples/contract-demo), which ships deliberately broken.
 
+## Handoffs
+
+A contract checks that a consumer names the carrier. A handoff has the runner
+carry the work:
+
+```bash
+# rings.conf
+CHAIN_revenue="tender.discovered@1 bid.submitted@1 contract.signed@1"
+# scout/ring.conf
+EMITS="tender.discovered@1"
+# bidder/ring.conf
+CONSUMES="tender.discovered@1"
+EMITS="bid.submitted@1"
+```
+
+The runner leases each item into the consumer's `in/`, tells the agent about it
+in the prompt, and reads its decisions back from `out/handoffs` — `accept <id>`,
+`reject <id> <reason>`, or `emit <type> key=… cause=… file=…` to hand work on.
+Every item is typed, checksummed, and refused if it fails the type's `accept.sh`.
+Every step leaves a receipt. `rings trace <id>` walks one item from source to
+outcome; `rings goals` shows the funnel; `rings feed` shows what just happened.
+
+Runner-verified, not tamper-proof — and that is said out loud in
+[docs/handoffs.md](docs/handoffs.md). Try [examples/handoff-demo](examples/handoff-demo).
+
 ## Commands
 
 ```
-rings new <name>            scaffold a ring
-rings run <name>            run it once, right now
+rings new <name>            scaffold a ring in $RINGS_HOME
+rings run <name>            run a ring once, right now
 rings list                  every ring, its schedule, its last verdict
-rings status <name>         detail, plus the last five runs
+rings status [name]         detail for one ring, or all of them
 rings doctor                find dead, silent, runaway and unbounded rings
-rings halt <name> [reason]  stop it without touching its schedule
+rings halt <name> [reason]  stop a ring without touching its schedule
 rings resume <name>         let it run again
 rings install <name>        register its trigger (launchd / systemd / cron)
 rings uninstall <name>      unregister the trigger, keep the ring
@@ -227,6 +252,14 @@ rings logs <name> [n]       tail the ring log
 rings chain                 the dependency graph across rings
 rings contracts [--json]    every declared handoff, and whether it is real
 rings goals                 every ring under the outcome it serves
+rings emit <ring> <type> key=<k> [cause=<id>] [ref=<r>] --file <payload>
+                            publish a work item from a script or by hand
+rings retry <id> [<ring>]   dead → ready with attempts reset; or hand an item to a ring
+rings inbox <ring>          what has been handed to a ring, and its state
+rings handoffs [--json]     per type: items, ready, leased, accepted, rejected, dead
+rings trace <id> [--json]   one item's whole life, source to outcome
+rings feed [n] [--json]     the newest n events across the fleet (default 50)
+rings version
 ```
 
 ## Notifications
@@ -243,7 +276,11 @@ rings goals                 every ring under the outcome it serves
 
 ```
 ~/.rings/
-├── rings.conf           what the fleet is for: APEX and SINKS
+├── rings.conf           what the fleet is for: APEX, SINKS, and each CHAIN_<sink>
+├── types/
+│   └── <type>/accept.sh the gate for one handoff type, if it has one
+├── spool/               every handoff item, delivery and receipt — read it with
+│                         rings inbox / handoffs / trace / feed, never by hand
 └── <name>/
     ├── ring.conf        the five primitives, plus EMITS / CONSUMES / SERVES
     ├── RUNBOOK.md       the contract — this is the prompt
@@ -251,7 +288,10 @@ rings goals                 every ring under the outcome it serves
     │   ├── pre.sh       runs before the agent (check inputs, fetch state)
     │   ├── verify.sh    decides whether the run counted
     │   └── post.sh      runs after the verdict, gets $RING_VERDICT
-    ├── out/             the deliverable lands here
+    ├── in/              items leased to this ring for the current run
+    ├── out/             the deliverable lands here; out/emit and out/handoffs
+    │                     are how a run publishes and decides handoff items
+    ├── runs/            one receipt per run, when handoffs are in play
     ├── ledger.jsonl     one line per run, forever
     └── ring.log         what happened
 ```

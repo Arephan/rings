@@ -512,8 +512,25 @@ if command -v python3 > /dev/null 2>&1; then
   assert "and one json entry" python3 -c "import json; j=json.load(open('$TMP/d-multi.json')); h=[f for f in j['findings'] if f['tag']=='halted' and 'multi' in f['text']]; assert len(h)==1 and 'line one line two' in h[0]['text']; assert not [f for f in j['findings'] if f['tag']=='line two']"
 fi
 
+# 20. the handoff demo: one fact travels to an outcome
+H3="$TMP/h3"; mkdir -p "$H3"
+cp -r "$ROOT/examples/handoff-demo/"* "$H3/"
+RINGS_HOME="$H3" "$RINGS" run scout > /dev/null 2>&1;  check "$?" "0" "handoff-demo/scout passes"
+RINGS_HOME="$H3" "$RINGS" run bidder > /dev/null 2>&1; check "$?" "0" "handoff-demo/bidder passes"
+RINGS_HOME="$H3" "$RINGS" run closer > /dev/null 2>&1; check "$?" "0" "handoff-demo/closer passes"
+RINGS_HOME="$H3" "$RINGS" goals > "$TMP/g3.out" 2>&1
+greps "the demo funnel shows one prospect" 'prospect.qualified@1 *1' "$TMP/g3.out"
+greps "one proposal" 'proposal.sent@1 *1' "$TMP/g3.out"
+greps "one deal" 'deal.signed@1 *1' "$TMP/g3.out"
+DEAL=$(RINGS_HOME="$H3" bash -c ". '$ROOT/lib/ring.sh'; ho_scan_items" | awk -F'\t' '$2 == "deal.signed@1" { print $1 }')
+RINGS_HOME="$H3" "$RINGS" trace "$DEAL" > "$TMP/t3.out" 2>&1
+greps "the trace of the deal starts at the prospect" '^[^ ].*prospect.qualified@1' "$TMP/t3.out"
+greps "and reaches the deal with its external ref" 'deal.signed@1.*ref=https://contracts.example.test/' "$TMP/t3.out"
+RINGS_HOME="$H3" "$RINGS" doctor > "$TMP/d3.out" 2>&1
+greps "the demo ships one ungated type on purpose" '\[ungated\].*prospect.qualified@1' "$TMP/d3.out"
+
 # 13. everything parses under bash 3.2, which is what launchd runs
-for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh; do
+for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh "$ROOT"/examples/*/types/*/accept.sh; do
   [ -f "$f" ] || continue
   /bin/bash -n "$f" 2>/dev/null || bad "$(basename "$f") does not parse under /bin/bash"
 done

@@ -1,6 +1,6 @@
 # Handoffs
 
-**Status: proposed for v0.3. Nothing in this document is implemented yet.**
+**Status: implemented in v0.3.0.** Sections below are the specification the implementation was built to.
 
 A contract ([docs/contracts.md](contracts.md)) says ring B reads a file ring A
 writes, and `rings contracts` checks whether B's own files name it. That closes
