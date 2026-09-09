@@ -13,21 +13,26 @@ function cli(home, args) {
   return execFileSync(RINGS, args, { env: { ...process.env, RINGS_HOME: home }, encoding: 'utf8' });
 }
 
-async function startServer(home) {
+const children = [];
+
+async function startServer(home, extraEnv = {}) {
   const port = 20000 + Math.floor(Math.random() * 20000);
   const child = spawn(process.execPath, [join(ROOT, 'board', 'server.mjs'), String(port)], {
-    env: { ...process.env, RINGS_HOME: home, RINGS_BIN: RINGS },
+    env: { ...process.env, RINGS_HOME: home, RINGS_BIN: RINGS, ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  children.push(child);
+  let stderr = '';
   await new Promise((resolve, reject) => {
     child.stdout.on('data', (d) => { if (String(d).includes('listening')) resolve(); });
-    child.stderr.on('data', (d) => reject(new Error(String(d))));
-    setTimeout(() => reject(new Error('server did not start')), 5000);
+    child.stderr.on('data', (d) => { stderr += String(d); });
+    child.on('exit', (code) => reject(new Error(`server exited before listening (code ${code}): ${stderr}`)));
+    setTimeout(() => reject(new Error(`server did not start: ${stderr}`)), 5000);
   });
   return { child, base: `http://127.0.0.1:${port}` };
 }
 
-let demo, empty, demoSrv, emptySrv;
+let demo, empty, demoSrv, emptySrv, badBinSrv;
 
 before(async () => {
   demo = mkdtempSync(join(tmpdir(), 'rings-demo-'));
@@ -37,9 +42,10 @@ before(async () => {
   mkdirSync(empty, { recursive: true });
   demoSrv = await startServer(demo);
   emptySrv = await startServer(empty);
+  badBinSrv = await startServer(empty, { RINGS_BIN: '/nonexistent/rings' });
 });
 
-after(() => { demoSrv.child.kill(); emptySrv.child.kill(); });
+after(() => { for (const c of children) c.kill(); });
 
 const ENDPOINTS = [
   ['/api/fleet', ['list', '--json']],
@@ -99,4 +105,20 @@ test('the root serves the page or a clear message when dist is missing', async (
 test('a path outside dist is not served', async () => {
   const res = await fetch(demoSrv.base + '/../server.mjs');
   assert.notEqual(await res.text(), (await import('node:fs')).readFileSync(join(ROOT, 'board', 'server.mjs'), 'utf8'));
+});
+
+test('GET /%zz is a 400 with no path disclosure', async () => {
+  const res = await fetch(demoSrv.base + '/%zz');
+  assert.equal(res.status, 400);
+  const body = await res.text();
+  assert.equal(body, 'bad path');
+  assert.ok(!body.includes('server.mjs'));
+  assert.ok(!body.includes('/Users'));
+});
+
+test('/api/fleet with a broken RINGS_BIN is a 500', async () => {
+  const res = await fetch(badBinSrv.base + '/api/fleet');
+  assert.equal(res.status, 500);
+  const j = JSON.parse(await res.text());
+  assert.match(j.error, /cannot run rings/);
 });

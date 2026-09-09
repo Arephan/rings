@@ -2,5 +2,5 @@
   "name": "rings-board-server",
   "private": true,
   "type": "module",
-  "scripts": { "test": "node --test test/" }
+  "scripts": { "test": "node --test test/server.test.mjs" }
 }

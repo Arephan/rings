@@ -63,6 +63,9 @@ async function api(url, res) {
   const args = route(url);
   if (!args) return json(res, 404, JSON.stringify({ error: 'no such endpoint' }));
   const { code, stdout, stderr } = await rings(args);
+  if (typeof code !== 'number') {
+    return json(res, 500, JSON.stringify({ error: `cannot run rings: ${code}` }));
+  }
   if (code !== 0) {
     return json(res, 404, JSON.stringify({ error: (stderr || stdout || `rings exited ${code}`).trim() }));
   }
@@ -73,7 +76,14 @@ async function api(url, res) {
 }
 
 async function file(url, res) {
-  let rel = normalize(decodeURIComponent(url.pathname));
+  let rel;
+  try {
+    rel = normalize(decodeURIComponent(url.pathname));
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end('bad path');
+    return;
+  }
   if (rel === '/' || !extname(rel)) rel = '/index.html';
   const abs = resolve(DIST, '.' + rel);
   if (!abs.startsWith(DIST)) { res.writeHead(403).end('forbidden'); return; }
@@ -99,7 +109,7 @@ createServer(async (req, res) => {
     if (url.pathname.startsWith('/api/')) await api(url, res);
     else await file(url, res);
   } catch (e) {
-    json(res, 500, JSON.stringify({ error: String(e && e.stack || e) }));
+    json(res, 500, JSON.stringify({ error: String(e && e.message || e) }));
   }
 }).listen(PORT, '127.0.0.1', () => {
   console.log(`rings board listening on http://127.0.0.1:${PORT}  (RINGS_HOME=${process.env.RINGS_HOME || '~/.rings'})`);
