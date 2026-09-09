@@ -213,7 +213,7 @@ ho_publish() {
 #    consuming it, has a delivery record;
 # 2. every lease that outlived its lease_until goes back to ready (or dead).
 ho_reconcile() {
-  local ring="$1" now="$2" spool ddir t since m id ts f until max
+  local ring="$1" now="$2" spool ddir t since m id ts f until max since_ts
   spool=$(ho_spool)
   ddir="$spool/deliveries/$ring"
   mkdir -p "$ddir"
@@ -227,8 +227,12 @@ ho_reconcile() {
       [ -f "$m" ] || continue
       [ "$(ho_kv_get "$m" type)" = "$t" ] || continue
       ts=$(ho_kv_get "$m" ts)
-      # RFC3339 UTC strings sort as time; a string compare is exact here.
-      [ "$ts" \< "$(cat "$since")" ] && continue
+      # RFC3339 UTC strings sort as time; a string compare is exact here. An
+      # item published in the same second as the marker is excluded too: a
+      # ring already subscribed at that instant already got a record from
+      # ho_deliver at publish time, so the boundary second loses nothing.
+      since_ts=$(cat "$since")
+      if [ "$ts" \< "$since_ts" ] || [ "$ts" = "$since_ts" ]; then continue; fi
       id=$(ho_kv_get "$m" id)
       ho_deliver "$id" "$ring"
     done
@@ -378,6 +382,7 @@ INBOX
     printf '\nTo hand work on, write the payload to a file under out/emit/ and add one line\n'
     printf 'to out/handoffs:\n'
     printf '  emit <type> key=<natural key> [cause=<inbox id>] [ref=<external id or URL>] file=<path>\n'
+    printf 'Values of key=, cause=, ref= and file= cannot contain spaces; encode a space as %%20 or -.\n'
     printf 'You may emit: %s\n' "$emits"
   fi
 }
@@ -388,7 +393,7 @@ INBOX
 # runner does". Writes runs/<run>.receipt and prints the ledger fragment.
 ho_settle() {
   local dir="$1" ring="$2" run="$3" started="$4" rc="$5" verdict="$6" inbox="$7"
-  local receipt hf line verb id type key cause ref file tok res rest
+  local receipt hf line verb id type key cause ref file tok res rest bad
   local nin na nr ne ni att sha
   receipt="$dir/runs/$run.receipt"
   hf="$dir/out/handoffs"
@@ -418,19 +423,25 @@ INBOX
     #    killed mid-write cannot publish half a candidate.
     while IFS= read -r line; do
       case "$line" in emit\ *) ;; *) continue ;; esac
+      set -f
       # shellcheck disable=SC2086
       set -- $line
+      set +f
       type="${2:-}"
       if [ $# -ge 2 ]; then shift 2; else set --; fi
-      key=""; cause=""; ref=""; file=""
+      key=""; cause=""; ref=""; file=""; bad=""
       for tok in "$@"; do
         case "$tok" in
           key=*)   key=${tok#key=} ;;
           cause=*) cause=${tok#cause=} ;;
           ref=*)   ref=${tok#ref=} ;;
           file=*)  file=${tok#file=} ;;
+          *)       bad="unexpected token '$tok' — key=, cause=, ref= and file= values cannot contain spaces" ;;
         esac
       done
+      if [ -n "$bad" ]; then
+        ni=$((ni + 1)); echo "invalid=$line — $bad" >> "$receipt"; continue
+      fi
       case "$file" in '' ) file="$dir/out/emit/.missing" ;; /*) ;; *) file="$dir/$file" ;; esac
       res=$(ho_publish "$ring" "$run" "$type" "$key" "$cause" "$ref" "$file")
       case "$res" in
@@ -446,8 +457,10 @@ INBOX
         accept\ * | reject\ *) ;;
         *) ni=$((ni + 1)); echo "invalid=$line — not accept, reject or emit" >> "$receipt"; continue ;;
       esac
+      set -f
       # shellcheck disable=SC2086
       set -- $line
+      set +f
       verb="$1"; id="${2:-}"
       if [ $# -ge 2 ]; then shift 2; else set --; fi
       rest="$*"

@@ -381,10 +381,11 @@ mkdir -p out/emit
 ID=$(ls in | head -1); ID=${ID%.json}
 printf '{"bid": "PRT-9", "for": "%s"}\n' "$ID" > out/emit/b.json
 {
-  printf 'accept %s submitted via portal, ref PRT-9\n' "$ID"
+  printf 'accept %s submitted via portal, ref PRT-9 (glob-safe: * ?)\n' "$ID"
   printf 'emit bid.submitted@1 key=PRT-9 cause=%s ref=PRT-9 file=out/emit/b.json\n' "$ID"
   printf 'frobnicate %s\n' "$ID"
   printf 'accept not-an-id whatever\n'
+  printf 'emit bid.submitted@1 key=BAD KEY file=out/emit/b.json\n'
   printf 'emit bid.submitted@1 key=PARTIAL file=out/emit/b.json'
 } > out/handoffs
 echo "took the one tender in the inbox and submitted a bid for it through the portal under reference PRT-9 today" > out/last.md
@@ -414,11 +415,12 @@ done
 check "$(holib "ho_kv_get '$H2/spool/items/$BID/manifest' cause")" "$T100" "the bid names its cause"
 RCPT=$(basename "$(find "$H2/bidder/runs" -mindepth 1 -maxdepth 1 -type f | head -1)")
 greps "receipt records the input and its checksum" "in=$T100 $(holib "ho_kv_get '$H2/spool/items/$T100/manifest' sha256") attempt=1" "$H2/bidder/runs/$RCPT"
-greps "receipt records the accept" "accepted=$T100 submitted via portal, ref PRT-9" "$H2/bidder/runs/$RCPT"
+greps "receipt records the accept" "accepted=$T100 submitted via portal, ref PRT-9 (glob-safe: \* ?)" "$H2/bidder/runs/$RCPT"
 greps "receipt records the emit" "emit=bid.submitted@1 key=PRT-9 -> $BID" "$H2/bidder/runs/$RCPT"
 greps "receipt records the unknown verb as invalid" "invalid=frobnicate" "$H2/bidder/runs/$RCPT"
 greps "receipt records the decision on a foreign id as invalid" "invalid=accept not-an-id" "$H2/bidder/runs/$RCPT"
-greps "the ledger counts match" '"handoffs": {"in": 1, "accepted": 1, "rejected": 0, "emitted": 1, "invalid": 2}' "$H2/bidder/ledger.jsonl"
+greps "an emit with a space in its key is invalid, not truncated" 'invalid=emit bid.submitted@1 key=BAD KEY' "$H2/bidder/runs/$RCPT"
+greps "the ledger counts match" '"handoffs": {"in": 1, "accepted": 1, "rejected": 0, "emitted": 1, "invalid": 3}' "$H2/bidder/ledger.jsonl"
 assert "in/ still holds this run's payload for inspection" test -f "$H2/bidder/in/$T100.json"
 
 # 13. everything parses under bash 3.2, which is what launchd runs
