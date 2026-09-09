@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: coreutils for gtimeout
+        if: runner.os == 'macOS'
+        run: brew install coreutils
+      - name: smoke
+        run: bash test/smoke.sh
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck -s bash -e SC1090,SC1091,SC2034 bin/rings lib/ring.sh test/smoke.sh template/hooks/*.sh examples/*/agent.sh examples/*/*/agent.sh examples/*/*/hooks/*.sh

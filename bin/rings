@@ -1,0 +1,467 @@
+#!/usr/bin/env bash
+# rings — a template for autonomous agent loops.
+# https://github.com/Arephan/rings
+set -uo pipefail
+
+RINGS_VERSION="0.1.0"
+SELF=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+RINGS_HOME="${RINGS_HOME:-$HOME/.rings}"
+
+# shellcheck source=../lib/ring.sh
+. "$SELF/lib/ring.sh"
+
+usage() {
+  cat <<'EOF'
+rings — one ring is one agent loop: trigger, goal, verifier, stop, memory.
+
+  rings new <name>            scaffold a ring in $RINGS_HOME
+  rings run <name>            run a ring once, right now
+  rings list                  every ring, its schedule, its last verdict
+  rings status [name]         detail for one ring, or all of them
+  rings doctor                find dead, silent, runaway and unbounded rings
+  rings halt <name> [reason]  stop a ring without touching its schedule
+  rings resume <name>         let it run again
+  rings install <name>        register its trigger (launchd / systemd / cron)
+  rings uninstall <name>      unregister the trigger, keep the ring
+  rings logs <name> [n]       tail the ring log
+  rings chain                 the dependency graph across rings
+  rings version
+
+Rings live in $RINGS_HOME (override with RINGS_HOME). A ring is a directory
+with a ring.conf and a RUNBOOK.md; everything else is optional.
+EOF
+}
+
+die() { echo "rings: $*" >&2; exit 1; }
+
+ring_dir_for() {
+  local n="$1"
+  if [ -d "$n" ] && [ -f "$n/ring.conf" ]; then (cd "$n" && pwd); return 0; fi
+  if [ -d "$RINGS_HOME/$n" ]; then echo "$RINGS_HOME/$n"; return 0; fi
+  return 1
+}
+
+each_ring() {
+  local d
+  [ -d "$RINGS_HOME" ] || return 0
+  for d in "$RINGS_HOME"/*; do
+    [ -f "$d/ring.conf" ] && echo "$d"
+  done
+}
+
+conf_get() {
+  # conf_get <dir> <KEY> [default] — read one value without sourcing into our shell
+  local v
+  v=$(bash -c ". '$1/ring.conf' 2>/dev/null; printf '%s' \"\${$2:-}\"")
+  [ -z "$v" ] && v="${3:-}"
+  printf '%s' "$v"
+}
+
+last_ledger_field() {
+  # last_ledger_field <ledger> <field>
+  [ -s "$1" ] || return 1
+  tail -1 "$1" | sed -n "s/.*\"$2\": *\"\{0,1\}\([^\",}]*\).*/\1/p"
+}
+
+# --- new ---------------------------------------------------------------------
+
+cmd_new() {
+  local name="${1:-}"
+  [ -n "$name" ] || die "usage: rings new <name>"
+  local dir="$RINGS_HOME/$name"
+  [ -e "$dir" ] && die "$dir already exists"
+  mkdir -p "$dir/hooks" "$dir/out"
+  sed "s/__NAME__/$name/g" "$SELF/template/ring.conf" > "$dir/ring.conf"
+  sed "s/__NAME__/$name/g" "$SELF/template/RUNBOOK.md" > "$dir/RUNBOOK.md"
+  cp "$SELF/template/hooks/verify.sh" "$dir/hooks/verify.sh"
+  chmod +x "$dir/hooks/verify.sh"
+  cat > "$dir/.gitignore" <<'EOF'
+*.log
+.lock/
+.prev/
+.guard.err
+EOF
+  echo "created $dir"
+  echo
+  echo "next:"
+  echo "  1. write the contract      \$EDITOR $dir/RUNBOOK.md"
+  echo "  2. set AGENT and SCHEDULE  \$EDITOR $dir/ring.conf"
+  echo "  3. run it once by hand     rings run $name"
+  echo "  4. only then schedule it   rings install $name"
+}
+
+# --- run ---------------------------------------------------------------------
+
+cmd_run() {
+  local name="${1:-}"
+  [ -n "$name" ] || die "usage: rings run <name>"
+  local dir
+  dir=$(ring_dir_for "$name") || die "no ring named $name"
+  ring_run "$dir"
+}
+
+# --- list / status -----------------------------------------------------------
+
+cmd_list() {
+  local d n sched verdict when halted
+  printf '%-16s %-14s %-11s %-22s %s\n' RING SCHEDULE LAST WHEN STATE
+  for d in $(each_ring); do
+    n=$(basename "$d")
+    sched=$(conf_get "$d" SCHEDULE "-")
+    verdict=$(last_ledger_field "$d/ledger.jsonl" verdict || echo "never ran")
+    when=$(last_ledger_field "$d/ledger.jsonl" ended || echo "-")
+    halted="active"
+    [ -f "$d/.halt" ] && halted="HALTED"
+    [ -d "$d/.lock" ] && halted="running"
+    printf '%-16s %-14s %-11s %-22s %s\n' "$n" "$sched" "$verdict" "$when" "$halted"
+  done
+}
+
+cmd_status() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then cmd_list; return; fi
+  local dir
+  dir=$(ring_dir_for "$name") || die "no ring named $name"
+  echo "ring:        $(basename "$dir")"
+  echo "dir:         $dir"
+  echo "schedule:    $(conf_get "$dir" SCHEDULE '(none)')"
+  echo "agent:       $(conf_get "$dir" AGENT '(unset)')"
+  echo "deliverable: $(conf_get "$dir" DELIVERABLE '(none)')"
+  echo "timeout:     $(conf_get "$dir" TIMEOUT 900)s"
+  echo "budget:      $(conf_get "$dir" MAX_RUNS_PER_DAY 0) runs/day (0 = unlimited)"
+  echo "needs:       $(conf_get "$dir" NEEDS '(nothing)')"
+  [ -f "$dir/.halt" ] && echo "HALTED:      $(cat "$dir/.halt")"
+  [ -d "$dir/.lock" ] && echo "running:     pid $(cat "$dir/.lock/pid" 2>/dev/null)"
+  echo
+  if [ -s "$dir/ledger.jsonl" ]; then
+    echo "last 5 runs:"
+    tail -5 "$dir/ledger.jsonl" | sed 's/^/  /'
+  else
+    echo "no runs recorded yet"
+  fi
+}
+
+# --- doctor ------------------------------------------------------------------
+
+cmd_doctor() {
+  local d n issues total
+  issues=0
+  total=0
+  for d in $(each_ring); do
+    total=$((total + 1))
+    n=$(basename "$d")
+
+    # A scheduled ring that has never produced a ledger line is not running at all.
+    local sched
+    sched=$(conf_get "$d" SCHEDULE "")
+    if [ -n "$sched" ] && [ ! -s "$d/ledger.jsonl" ]; then
+      printf '%-13s%s\n' "[dead]" "$n is scheduled ($sched) but has never recorded a run — is the trigger installed?"
+      issues=$((issues + 1))
+    fi
+
+    if [ -s "$d/ledger.jsonl" ]; then
+      # Silent total failure: the loop wakes, burns the call, and never verifies.
+      local last20 passes runs
+      last20=$(tail -20 "$d/ledger.jsonl")
+      passes=$(printf '%s\n' "$last20" | grep -c '"verdict": "pass"' | tr -d ' ')
+      runs=$(printf '%s\n' "$last20" | grep -c '"ring"' | tr -d ' ')
+      if [ "$runs" -ge 5 ] && [ "$passes" -eq 0 ]; then
+        printf '%-13s%s\n' "[silent]" "$n has not passed once in its last $runs runs — it is burning calls for nothing"
+        issues=$((issues + 1))
+      fi
+
+      # Stale: scheduled, but the last run is older than a day.
+      local ended age
+      ended=$(last_ledger_field "$d/ledger.jsonl" ended || echo "")
+      if [ -n "$sched" ] && [ -n "$ended" ]; then
+        age=$(( $(date +%s) - $(ring_mtime "$d/ledger.jsonl") ))
+        if [ "$age" -gt 86400 ]; then
+          printf '%-13s%s\n' "[stale]" "$n last ran $((age / 3600))h ago but is scheduled $sched"
+          issues=$((issues + 1))
+        fi
+      fi
+    fi
+
+    # Unbounded log. These are the files that quietly eat a disk.
+    if [ -f "$d/ring.log" ]; then
+      local kb
+      kb=$(( $(wc -c < "$d/ring.log") / 1024 ))
+      if [ "$kb" -gt 51200 ]; then
+        printf '%-13s%s\n' "[unbounded]" "$n ring.log is ${kb}KB — rotate it or write less"
+        issues=$((issues + 1))
+      fi
+    fi
+
+    # No budget on a frequent schedule is how an agent loop runs up a bill.
+    local budget
+    budget=$(conf_get "$d" MAX_RUNS_PER_DAY 0)
+    if [ "$budget" = "0" ] && [ -n "$sched" ]; then
+      printf '%-13s%s\n' "[unbudgeted]" "$n has no MAX_RUNS_PER_DAY and a live schedule — one hang loop and it runs all day"
+      issues=$((issues + 1))
+    fi
+
+    # No verifier at all means "it exited 0" is your only evidence.
+    if [ -z "$(conf_get "$d" DELIVERABLE "")" ] && [ ! -x "$d/hooks/verify.sh" ]; then
+      printf '%-13s%s\n' "[unverified]" "$n declares no DELIVERABLE and has no hooks/verify.sh — nothing can tell you it worked"
+      issues=$((issues + 1))
+    fi
+
+    # A lock older than any plausible run is a corpse holding the door shut.
+    if [ -d "$d/.lock" ]; then
+      local lage stale
+      lage=$(( $(date +%s) - $(ring_mtime "$d/.lock") ))
+      stale=$(conf_get "$d" LOCK_STALE 1800)
+      if [ "$lage" -gt "$stale" ]; then
+        printf '%-13s%s\n' "[stuck]" "$n holds a lock ${lage}s old (stale after ${stale}s) — next run will reclaim it"
+        issues=$((issues + 1))
+      fi
+    fi
+
+    # A ring halted and forgotten is a ring you think is working.
+    if [ -f "$d/.halt" ]; then
+      printf '%-13s%s\n' "[halted]" "$n is halted: $(head -c 120 "$d/.halt")"
+      issues=$((issues + 1))
+    fi
+  done
+  echo
+  if [ "$issues" -eq 0 ]; then
+    echo "$total ring(s), nothing to report."
+  else
+    echo "$total ring(s), $issues finding(s)."
+  fi
+}
+
+# --- halt / resume -----------------------------------------------------------
+
+cmd_halt() {
+  local name="${1:-}"
+  [ -n "$name" ] || die "usage: rings halt <name> [reason]"
+  local dir
+  dir=$(ring_dir_for "$name") || die "no ring named $name"
+  shift
+  printf '%s %s\n' "$(date -u +%FT%TZ)" "${*:-halted by hand}" > "$dir/.halt"
+  echo "halted $name — it will skip every run until: rings resume $name"
+}
+
+cmd_resume() {
+  local name="${1:-}"
+  [ -n "$name" ] || die "usage: rings resume <name>"
+  local dir
+  dir=$(ring_dir_for "$name") || die "no ring named $name"
+  rm -f -- "$dir/.halt"
+  echo "resumed $name"
+}
+
+# --- install / uninstall -----------------------------------------------------
+
+cron_field_expand() {
+  # cron_field_expand <field> <max> — turns a cron field into a space-separated list.
+  # Handles *, */N, a-b, a-b/N and comma lists. Prints nothing for a bare *, which
+  # the caller reads as "every one of these, so omit the key entirely".
+  local field max part step lo hi i out
+  field="$1"; max="$2"; out=""
+  [ "$field" = "*" ] && return 0
+  for part in $(echo "$field" | tr ',' ' '); do
+    step=1
+    case "$part" in
+      */*) step=${part#*/}; part=${part%/*} ;;
+    esac
+    case "$part" in
+      \*)  lo=0; hi="$max" ;;
+      *-*) lo=${part%-*}; hi=${part#*-} ;;
+      *)   lo="$part"; hi="$part" ;;
+    esac
+    i="$lo"
+    while [ "$i" -le "$hi" ]; do
+      out="$out $i"
+      i=$((i + step))
+    done
+  done
+  echo "$out"
+}
+
+cron_to_launchd() {
+  # cron_to_launchd "<min> <hour> <dom> <mon> <dow>" — emits StartCalendarInterval dicts.
+  local min hr dom mon dow mins hrs dows m h w
+  min=$(echo "$1" | awk '{print $1}')
+  hr=$(echo "$1" | awk '{print $2}')
+  dom=$(echo "$1" | awk '{print $3}')
+  mon=$(echo "$1" | awk '{print $4}')
+  dow=$(echo "$1" | awk '{print $5}')
+  [ "$dom" = "*" ] || echo "		<!-- day-of-month $dom is not translated; edit this by hand -->"
+  [ "$mon" = "*" ] || echo "		<!-- month $mon is not translated; edit this by hand -->"
+
+  mins=$(cron_field_expand "$min" 59)
+  hrs=$(cron_field_expand "$hr" 23)
+  dows=$(cron_field_expand "$dow" 6)
+  # A bare * in the minute field would mean 60 launchd entries per hour, which is
+  # never what anyone wants from an agent loop.
+  [ -z "$mins" ] && { echo "		<!-- '*' in the minute field means every minute; refusing to expand -->"; return 1; }
+
+  for m in $mins; do
+    for h in ${hrs:-_}; do
+      for w in ${dows:-_}; do
+        printf '\t\t<dict><key>Minute</key><integer>%s</integer>' "$m"
+        [ "$h" = "_" ] || printf '<key>Hour</key><integer>%s</integer>' "$h"
+        [ "$w" = "_" ] || printf '<key>Weekday</key><integer>%s</integer>' "$w"
+        printf '</dict>\n'
+      done
+    done
+  done
+}
+
+cmd_install() {
+  local name="${1:-}"
+  [ -n "$name" ] || die "usage: rings install <name>"
+  local dir sched label
+  dir=$(ring_dir_for "$name") || die "no ring named $name"
+  sched=$(conf_get "$dir" SCHEDULE "")
+  [ -n "$sched" ] || die "$name has no SCHEDULE in ring.conf"
+  label="rings.$name"
+
+  case "$(uname -s)" in
+    Darwin)
+      local plist
+      plist="$HOME/Library/LaunchAgents/$label.plist"
+      {
+        echo '<?xml version="1.0" encoding="UTF-8"?>'
+        echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+        echo '<plist version="1.0">'
+        echo '<dict>'
+        printf '\t<key>Label</key><string>%s</string>\n' "$label"
+        echo '	<key>ProgramArguments</key>'
+        echo '	<array>'
+        printf '\t\t<string>/bin/bash</string>\n'
+        printf '\t\t<string>%s/bin/rings</string>\n' "$SELF"
+        printf '\t\t<string>run</string>\n'
+        printf '\t\t<string>%s</string>\n' "$name"
+        echo '	</array>'
+        echo '	<key>RunAtLoad</key><false/>'
+        printf '\t<key>WorkingDirectory</key><string>%s</string>\n' "$dir"
+        printf '\t<key>StandardOutPath</key><string>%s/launchd.log</string>\n' "$dir"
+        printf '\t<key>StandardErrorPath</key><string>%s/launchd.log</string>\n' "$dir"
+        echo '	<key>StartCalendarInterval</key>'
+        echo '	<array>'
+        cron_to_launchd "$sched"
+        echo '	</array>'
+        echo '</dict>'
+        echo '</plist>'
+      } > "$plist"
+      launchctl unload "$plist" 2>/dev/null
+      launchctl load "$plist" || die "launchctl load failed"
+      echo "installed $label -> $plist"
+      ;;
+    Linux)
+      local unitdir svc tmr oncal
+      unitdir="$HOME/.config/systemd/user"
+      mkdir -p "$unitdir"
+      svc="$unitdir/$label.service"
+      tmr="$unitdir/$label.timer"
+      oncal=$(conf_get "$dir" ONCALENDAR "")
+      [ -n "$oncal" ] || die "on Linux set ONCALENDAR in ring.conf (systemd syntax, e.g. '*:17,47')"
+      cat > "$svc" <<EOF
+[Unit]
+Description=rings: $name
+
+[Service]
+Type=oneshot
+WorkingDirectory=$dir
+ExecStart=/usr/bin/env bash $SELF/bin/rings run $name
+EOF
+      cat > "$tmr" <<EOF
+[Unit]
+Description=rings timer: $name
+
+[Timer]
+OnCalendar=$oncal
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+      systemctl --user daemon-reload
+      systemctl --user enable --now "$label.timer" || die "systemctl enable failed"
+      echo "installed $label.timer -> $tmr"
+      ;;
+    *)
+      echo "unsupported platform for automatic install. Add this crontab line yourself:"
+      echo "$sched $SELF/bin/rings run $name >> $dir/cron.log 2>&1"
+      ;;
+  esac
+}
+
+cmd_uninstall() {
+  local name="${1:-}"
+  [ -n "$name" ] || die "usage: rings uninstall <name>"
+  local label="rings.$name"
+  case "$(uname -s)" in
+    Darwin)
+      local plist="$HOME/Library/LaunchAgents/$label.plist"
+      [ -f "$plist" ] || die "$plist not found"
+      launchctl unload "$plist" 2>/dev/null
+      rm -f -- "$plist"
+      echo "uninstalled $label"
+      ;;
+    Linux)
+      systemctl --user disable --now "$label.timer" 2>/dev/null
+      rm -f -- "$HOME/.config/systemd/user/$label.timer" "$HOME/.config/systemd/user/$label.service"
+      systemctl --user daemon-reload
+      echo "uninstalled $label"
+      ;;
+    *)
+      echo "remove the crontab line for $name yourself"
+      ;;
+  esac
+}
+
+# --- logs / chain ------------------------------------------------------------
+
+cmd_logs() {
+  local name="${1:-}"
+  [ -n "$name" ] || die "usage: rings logs <name> [lines]"
+  local dir
+  dir=$(ring_dir_for "$name") || die "no ring named $name"
+  tail -n "${2:-40}" "$dir/ring.log" 2>/dev/null || echo "(no log yet)"
+}
+
+cmd_chain() {
+  local d n needs dep
+  echo "chain (a ring lists what it NEEDS; nothing here runs another ring directly)"
+  echo
+  for d in $(each_ring); do
+    n=$(basename "$d")
+    needs=$(conf_get "$d" NEEDS "")
+    if [ -z "$needs" ]; then
+      echo "  $n  (head of a chain)"
+    else
+      for dep in $needs; do
+        echo "  $dep  feeds  $n"
+      done
+    fi
+  done
+  echo
+  echo "A chain is data, not control flow: an upstream ring writes its deliverable,"
+  echo "a downstream ring reads it and skips when it is stale. Nothing orchestrates."
+}
+
+# --- main --------------------------------------------------------------------
+
+mkdir -p "$RINGS_HOME"
+cmd="${1:-help}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+  new)        cmd_new "$@" ;;
+  run)        cmd_run "$@" ;;
+  list|ls)    cmd_list "$@" ;;
+  status)     cmd_status "$@" ;;
+  doctor)     cmd_doctor "$@" ;;
+  halt)       cmd_halt "$@" ;;
+  resume)     cmd_resume "$@" ;;
+  install)    cmd_install "$@" ;;
+  uninstall)  cmd_uninstall "$@" ;;
+  logs)       cmd_logs "$@" ;;
+  chain)      cmd_chain "$@" ;;
+  version|-v|--version) echo "rings $RINGS_VERSION" ;;
+  help|-h|--help) usage ;;
+  *)          usage; exit 1 ;;
+esac

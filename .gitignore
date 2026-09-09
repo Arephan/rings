@@ -1,0 +1,9 @@
+*.log
+*.bak
+.lock/
+.prev/
+.guard.err
+ledger.jsonl
+examples/*/out/
+examples/*/*/out/
+.DS_Store
