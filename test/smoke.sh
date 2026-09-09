@@ -563,6 +563,46 @@ OUT=$(RINGS_HOME="$H2" "$RINGS" emit scout tender.discovered@1 key=DIR-1 --file 
 case "$OUT" in refused*not\ a\ regular\ file*) ok "a directory is not a payload" ;; *) bad "a directory is not a payload ($OUT)" ;; esac
 assert "and nothing was left in incoming" test -z "$(ls -A "$H2/spool/incoming" 2>/dev/null)"
 
+# 22. handoffs — the parser takes the lines an agent actually writes
+H4="$TMP/h4"; mkdir -p "$H4/scout/out" "$H4/bidder/out"
+cat > "$H4/rings.conf" <<'FLEET'
+APEX="one outcome"
+SINKS="revenue:Money in"
+CHAIN_revenue="tender.discovered@1 bid.submitted@1 contract.signed@1"
+FLEET
+printf 'AGENT="true"\nTIMEOUT=10\nNOTIFY="none"\nEMITS="tender.discovered@1"\n' > "$H4/scout/ring.conf"
+cat > "$H4/bidder/ring.conf" <<'CONF'
+AGENT="bash agent.sh"
+DELIVERABLE="out/last.md"
+TIMEOUT=10
+NOTIFY="none"
+CONSUMES="tender.discovered@1"
+EMITS="bid.submitted@1"
+CONF
+# indented like the prompt block shows it, bulleted like a model writes a list,
+# and with the carriage return a file that went through Windows carries
+cat > "$H4/bidder/agent.sh" <<'AGENT'
+#!/usr/bin/env bash
+mkdir -p out/emit
+ID=$(ls in | head -1); ID=${ID%.json}
+printf '{"bid": "PRT-4"}\n' > out/emit/b.json
+{
+  printf '  accept %s indented, as the prompt block shows it\r\n' "$ID"
+  printf -- '- emit bid.submitted@1 key=PRT-4 cause=%s file=out/emit/b.json\n' "$ID"
+} > out/handoffs
+echo "read the one tender in the inbox and wrote a bid for it under reference PRT-4" > out/last.md
+AGENT
+echo "# bidder" > "$H4/bidder/RUNBOOK.md"
+T4=$(RINGS_HOME="$H4" "$RINGS" emit scout tender.discovered@1 key=T-400 --file "$TMP/t2.json"); T4=${T4#ok }
+RINGS_HOME="$H4" "$RINGS" run bidder > /dev/null 2>&1
+check "$?" "0" "a ring writing indented and bulleted handoff lines passes"
+RCPT4=$(basename "$(find "$H4/bidder/runs" -mindepth 1 -maxdepth 1 -type f | head -1)")
+greps "an indented accept line is applied, carriage return and all" "accepted=$T4 indented, as the prompt block shows it$" "$H4/bidder/runs/$RCPT4"
+greps "a bulleted emit line publishes" "emit=bid.submitted@1 key=PRT-4 -> " "$H4/bidder/runs/$RCPT4"
+check "$(holib "ho_kv_get '$H4/spool/deliveries/bidder/$T4' state")" "accepted" "and the delivery is accepted"
+check "$(find "$H4/spool/items" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" "2" "the tender and the bid it caused"
+greps "nothing was counted invalid" '"handoffs": {"in": 1, "accepted": 1, "rejected": 0, "emitted": 1, "invalid": 0}' "$H4/bidder/ledger.jsonl"
+
 # 13. everything parses under bash 3.2, which is what launchd runs
 for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh "$ROOT"/examples/*/types/*/accept.sh; do
   [ -f "$f" ] || continue

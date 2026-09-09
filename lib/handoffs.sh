@@ -409,6 +409,14 @@ INBOX
   fi
 }
 
+# ho_normalise_line <line> — what an agent actually writes to out/handoffs.
+# The prompt block shows the verbs indented, models like to bullet a list, and a
+# file that took a trip through Windows carries a trailing carriage return. None
+# of those change what the line means, so none of them make it invalid.
+ho_normalise_line() {
+  printf '%s' "$1" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/^[-*] *//'
+}
+
 # ho_settle <ring dir> <ring> <run> <started> <rc> <verdict> <inbox tsv>
 # After the agent: publish candidates, then apply decisions, then release what
 # is still leased. That order is deliberate — see docs/handoffs.md, "What the
@@ -444,6 +452,8 @@ INBOX
     # 1. publish. `read` returns non-zero on an unterminated last line, so a run
     #    killed mid-write cannot publish half a candidate.
     while IFS= read -r line; do
+      line=$(ho_normalise_line "$line")
+      [ -n "$line" ] || continue
       case "$line" in emit\ *) ;; *) continue ;; esac
       set -f
       # shellcheck disable=SC2086
@@ -474,6 +484,7 @@ INBOX
 
     # 2. decisions
     while IFS= read -r line; do
+      line=$(ho_normalise_line "$line")
       case "$line" in
         '' | emit\ *) continue ;;
         accept\ * | reject\ *) ;;
