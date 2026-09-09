@@ -8,3 +8,4 @@ examples/*/out/
 examples/*/*/out/
 .DS_Store
 docs/superpowers/
+board/ui/node_modules/

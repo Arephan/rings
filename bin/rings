@@ -36,6 +36,7 @@ rings — one ring is one agent loop: trigger, goal, verifier, stop, memory.
   rings handoffs [--json]     per type: items, ready, leased, accepted, rejected, dead
   rings trace <id> [--json]   one item's whole life, source to outcome
   rings feed [n] [--json]     the newest n events across the fleet (default 50)
+  rings board [port]          serve the read-only board on localhost (default 7781)
   rings version
 
 Rings live in $RINGS_HOME (override with RINGS_HOME). A ring is a directory
@@ -1011,6 +1012,15 @@ $ev
 EV
 }
 
+cmd_board() {
+  # rings board [port] — serve the read-only board. Needs node 18+; nothing else does.
+  local port="${1:-7781}"
+  command -v node >/dev/null 2>&1 || die "rings board needs node 18 or newer (https://nodejs.org). Everything it shows is also in: rings list/goals/handoffs/feed/doctor --json"
+  case "$port" in *[!0-9]*) die "usage: rings board [port]" ;; esac
+  echo "rings board on http://127.0.0.1:$port — Ctrl-C stops it, nothing is left running."
+  RINGS_HOME="$RINGS_HOME" RINGS_BIN="$SELF/bin/rings" exec node "$SELF/board/server.mjs" "$port"
+}
+
 # --- main --------------------------------------------------------------------
 
 mkdir -p "$RINGS_HOME"
@@ -1036,6 +1046,7 @@ case "$cmd" in
   handoffs)   cmd_handoffs "$@" ;;
   trace)      cmd_trace "$@" ;;
   feed)       cmd_feed "$@" ;;
+  board)      cmd_board "$@" ;;
   version|-v|--version) echo "rings $RINGS_VERSION" ;;
   help|-h|--help) usage ;;
   *)          usage; exit 1 ;;
