@@ -254,6 +254,51 @@ check "$(holib ho_subscribers_of tender.discovered@1)" "bidder" "subscribers are
 check "$(holib "ho_ring_emits scout tender.discovered@1 && echo yes")" "yes" "a ring may emit what its EMITS lists"
 check "$(holib "ho_ring_emits scout bid.submitted@1; echo \$?")" "1" "and nothing else"
 
+# 15. handoffs — publish
+mkdir -p "$HO/types/bid.submitted@1" "$HO/closer"
+printf 'EMITS="contract.signed@1"\n' > "$HO/closer/ring.conf"
+cat > "$HO/types/bid.submitted@1/accept.sh" <<'GATE'
+#!/usr/bin/env bash
+# refuse a bid whose payload does not name a portal reference
+grep -q '"portal"' "$RING_PAYLOAD" || { echo "no portal reference in payload" >&2; exit 1; }
+GATE
+chmod +x "$HO/types/bid.submitted@1/accept.sh"
+printf '{"title": "the big one", "value": 400000}\n' > "$TMP/tender.json"
+OUT=$(RINGS_HOME="$HO" "$RINGS" emit scout tender.discovered@1 key=T-1 ref=https://example.test/T-1 --file "$TMP/tender.json")
+case "$OUT" in ok\ *) ok "emit publishes a declared type from its declared producer" ;; *) bad "emit publishes a declared type from its declared producer ($OUT)" ;; esac
+TID=${OUT#ok }
+assert "the item has a manifest" test -f "$HO/spool/items/$TID/manifest"
+assert "the item has the payload" cmp -s "$TMP/tender.json" "$HO/spool/items/$TID/payload"
+check "$(holib "ho_kv_get '$HO/spool/items/$TID/manifest' type")" "tender.discovered@1" "manifest records the type"
+check "$(holib "ho_kv_get '$HO/spool/items/$TID/manifest' from")" "scout" "manifest records the producer"
+check "$(holib "ho_kv_get '$HO/spool/items/$TID/manifest' sha256")" "$(holib "ho_sha256 '$TMP/tender.json'")" "manifest checksum matches the payload"
+assert "a ready delivery exists for the subscriber" test -f "$HO/spool/deliveries/bidder/$TID"
+check "$(holib "ho_kv_get '$HO/spool/deliveries/bidder/$TID' state")" "ready" "the delivery starts ready"
+assert "nothing is left in incoming" test -z "$(ls -A "$HO/spool/incoming" 2>/dev/null)"
+
+OUT=$(RINGS_HOME="$HO" "$RINGS" emit scout tender.discovered@1 key=T-1 --file "$TMP/tender.json")
+check "$OUT" "refused duplicate of $TID" "a second item with the same type and key is refused as a duplicate"
+check "$(find "$HO/spool/items" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" "1" "and nothing was published"
+OUT=$(RINGS_HOME="$HO" "$RINGS" emit scout nope@1 key=X --file "$TMP/tender.json")
+case "$OUT" in refused*not\ declared*) ok "an undeclared type is refused" ;; *) bad "an undeclared type is refused ($OUT)" ;; esac
+OUT=$(RINGS_HOME="$HO" "$RINGS" emit scout bid.submitted@1 key=X --file "$TMP/tender.json")
+case "$OUT" in refused*EMITS*) ok "a ring cannot emit a type it does not declare" ;; *) bad "a ring cannot emit a type it does not declare ($OUT)" ;; esac
+OUT=$(RINGS_HOME="$HO" "$RINGS" emit scout tender.discovered@1 --file "$TMP/tender.json")
+case "$OUT" in refused*key*) ok "key is required" ;; *) bad "key is required ($OUT)" ;; esac
+: > "$TMP/empty.json"
+OUT=$(RINGS_HOME="$HO" "$RINGS" emit scout tender.discovered@1 key=T-2 --file "$TMP/empty.json")
+case "$OUT" in refused*payload*) ok "an empty payload is refused" ;; *) bad "an empty payload is refused ($OUT)" ;; esac
+OUT=$(RINGS_HOME="$HO" "$RINGS" emit closer contract.signed@1 key=C-1 --file "$TMP/tender.json")
+case "$OUT" in refused*outcome*ref*) ok "an outcome without ref is refused" ;; *) bad "an outcome without ref is refused ($OUT)" ;; esac
+printf '{"bid": 1}\n' > "$TMP/bid-nogate.json"
+OUT=$(RINGS_HOME="$HO" "$RINGS" emit bidder bid.submitted@1 key=B-1 --file "$TMP/bid-nogate.json")
+check "$OUT" "refused gate: no portal reference in payload" "the type gate refuses a candidate and its last stderr line is the reason"
+printf '{"bid": 1, "portal": "PRT-1"}\n' > "$TMP/bid.json"
+OUT=$(RINGS_HOME="$HO" "$RINGS" emit bidder bid.submitted@1 key=B-1 --file "$TMP/bid.json")
+case "$OUT" in ok\ *) ok "the gate lets a good candidate through" ;; *) bad "the gate lets a good candidate through ($OUT)" ;; esac
+OUT=$(RINGS_HOME="$HO" "$RINGS" emit bidder bid.submitted@1 key=B-2 cause=not-an-item --file "$TMP/bid.json")
+case "$OUT" in refused*cause*) ok "a cause that is not a published item is refused" ;; *) bad "a cause that is not a published item is refused ($OUT)" ;; esac
+
 # 13. everything parses under bash 3.2, which is what launchd runs
 for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh; do
   [ -f "$f" ] || continue

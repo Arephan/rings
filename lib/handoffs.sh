@@ -112,3 +112,96 @@ ho_subscribers_of() {
     done
   done
 }
+
+# --- publish -----------------------------------------------------------------
+
+# ho_find_key <type> <key> — id of the published item with that identity, if any.
+ho_find_key() {
+  local m
+  for m in "$(ho_spool)"/items/*/manifest; do
+    [ -f "$m" ] || continue
+    [ "$(ho_kv_get "$m" type)" = "$1" ] || continue
+    [ "$(ho_kv_get "$m" key)" = "$2" ] || continue
+    ho_kv_get "$m" id
+    return 0
+  done
+  return 1
+}
+
+# ho_deliver <id> <ring> — a ready delivery record, created once, never twice.
+ho_deliver() {
+  local f
+  f="$(ho_spool)/deliveries/$2/$1"
+  [ -f "$f" ] && return 0
+  mkdir -p "$(dirname "$f")"
+  {
+    echo "state=ready"
+    echo "attempts=0"
+    echo "leased_by="
+    echo "lease_until="
+    echo "lease_until_epoch="
+    echo "ended="
+    echo "note="
+    echo "created=$(ho_now)"
+  } > "$f.tmp.$$"
+  mv -f "$f.tmp.$$" "$f"
+}
+
+# ho_publish <ring> <run> <type> <key> <cause> <ref> <payload file>
+# Prints one line: "ok <id>" or "refused <reason>". The refusal reasons are the
+# built-in checks from docs/handoffs.md, then the type's accept.sh if there is one.
+ho_publish() {
+  local ring="$1" run="$2" type="$3" key="$4" cause="$5" ref="$6" payload="$7"
+  local spool id tmp sha bytes sub dup gate why drec
+  spool=$(ho_spool)
+
+  ho_type_declared "$type" || { echo "refused $type is not declared in any CHAIN_ line of rings.conf"; return 0; }
+  ho_ring_emits "$ring" "$type" || { echo "refused $ring does not list $type in EMITS"; return 0; }
+  [ -n "$key" ] || { echo "refused key= is required"; return 0; }
+  [ -s "$payload" ] || { echo "refused payload $payload is missing or empty"; return 0; }
+  if ho_type_is_outcome "$type" && [ -z "$ref" ]; then
+    echo "refused $type is an outcome and needs ref= into the system where it happened"; return 0
+  fi
+  if [ -n "$cause" ]; then
+    [ -f "$spool/items/$cause/manifest" ] || { echo "refused cause $cause is not a published item"; return 0; }
+    drec="$spool/deliveries/$ring/$cause"
+    if [ "$(ho_kv_get "$drec" leased_by 2>/dev/null)" != "$run" ] && [ "$(ho_kv_get "$drec" decided_by 2>/dev/null)" != "$run" ]; then
+      echo "refused cause $cause was not leased to run $run of $ring"; return 0
+    fi
+  fi
+  if dup=$(ho_find_key "$type" "$key"); then
+    echo "refused duplicate of $dup"; return 0
+  fi
+
+  gate="$RINGS_HOME/types/$type/accept.sh"
+  if [ -x "$gate" ]; then
+    if ! why=$(RING_PAYLOAD="$payload" RING_KEY="$key" RING_REF="$ref" RING_CAUSE="$cause" \
+                RING_FROM="$ring" RING_TYPE="$type" "$gate" 2>&1 >/dev/null); then
+      echo "refused gate: $(printf '%s\n' "$why" | grep . | tail -1)"; return 0
+    fi
+  fi
+
+  id=$(ho_new_id)
+  tmp="$spool/incoming/$id"
+  mkdir -p "$tmp" "$spool/items" || return 2
+  cp "$payload" "$tmp/payload" || return 2
+  sha=$(ho_sha256 "$tmp/payload")
+  bytes=$(wc -c < "$tmp/payload" | tr -d ' ')
+  {
+    echo "id=$id"
+    echo "type=$type"
+    echo "from=$ring"
+    echo "run=$run"
+    echo "ts=$(ho_now)"
+    echo "key=$key"
+    echo "cause=$cause"
+    echo "ref=$ref"
+    echo "sha256=$sha"
+    echo "bytes=$bytes"
+  } > "$tmp/manifest"
+  mv "$tmp" "$spool/items/$id" || return 2
+  for sub in $(ho_subscribers_of "$type"); do
+    ho_deliver "$id" "$sub"
+  done
+  echo "ok $id"
+}

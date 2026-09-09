@@ -31,6 +31,8 @@ rings — one ring is one agent loop: trigger, goal, verifier, stop, memory.
   rings chain                 the dependency graph across rings
   rings contracts [--json]    every declared handoff, and whether it is real
   rings goals                 every ring under the outcome it serves
+  rings emit <ring> <type> key=<k> [cause=<id>] [ref=<r>] --file <payload>
+                              publish a work item from a script or by hand
   rings version
 
 Rings live in $RINGS_HOME (override with RINGS_HOME). A ring is a directory
@@ -607,6 +609,28 @@ cmd_goals() {
   fi
 }
 
+# --- handoffs ----------------------------------------------------------------
+
+cmd_emit() {
+  # rings emit <ring> <type> key=<k> [cause=<id>] [ref=<r>] --file <payload>
+  local ring="${1:-}" type="${2:-}" key="" cause="" ref="" file="" tok
+  [ -n "$ring" ] && [ -n "$type" ] || die "usage: rings emit <ring> <type> key=<k> [cause=<id>] [ref=<r>] --file <payload>"
+  ring_dir_for "$ring" > /dev/null || die "no ring named $ring"
+  shift 2
+  while [ $# -gt 0 ]; do
+    tok="$1"; shift
+    case "$tok" in
+      key=*)   key=${tok#key=} ;;
+      cause=*) cause=${tok#cause=} ;;
+      ref=*)   ref=${tok#ref=} ;;
+      --file)  file="${1:-}"; shift ;;
+      *)       die "unknown argument: $tok" ;;
+    esac
+  done
+  [ -n "$file" ] || die "--file <payload> is required"
+  ho_publish "$ring" "cli-$(ho_run_id)" "$type" "$key" "$cause" "$ref" "$file"
+}
+
 # --- main --------------------------------------------------------------------
 
 mkdir -p "$RINGS_HOME"
@@ -626,6 +650,7 @@ case "$cmd" in
   chain)      cmd_chain "$@" ;;
   contracts)  cmd_contracts "$@" ;;
   goals)      cmd_goals "$@" ;;
+  emit)       cmd_emit "$@" ;;
   version|-v|--version) echo "rings $RINGS_VERSION" ;;
   help|-h|--help) usage ;;
   *)          usage; exit 1 ;;
