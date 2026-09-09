@@ -346,6 +346,81 @@ check "$(find "$HO/spool/deliveries/late" -mindepth 1 -maxdepth 1 ! -name '.*' |
 RINGS_HOME="$HO" "$RINGS" retry "$TID" late > /dev/null
 check "$(holib "ho_kv_get '$HO/spool/deliveries/late/$TID' state")" "ready" "retry hands an old item to a new subscriber on purpose"
 
+# 17. handoffs — a run end to end
+H2="$TMP/h2"; mkdir -p "$H2/scout/out" "$H2/bidder/out"
+cat > "$H2/rings.conf" <<'FLEET'
+APEX="one outcome"
+SINKS="revenue:Money in"
+CHAIN_revenue="tender.discovered@1 bid.submitted@1 contract.signed@1"
+FLEET
+cat > "$H2/scout/ring.conf" <<'CONF'
+AGENT="bash agent.sh"
+DELIVERABLE="out/last.md"
+TIMEOUT=10
+NOTIFY="none"
+EMITS="tender.discovered@1"
+CONF
+cat > "$H2/scout/agent.sh" <<'AGENT'
+#!/usr/bin/env bash
+mkdir -p out/emit
+printf '{"title": "the big one", "value": 400000}\n' > out/emit/t.json
+printf 'emit tender.discovered@1 key=T-100 ref=https://example.test/T-100 file=out/emit/t.json\n' > out/handoffs
+echo "found one tender worth four hundred thousand and handed it on to whoever bids on these things now" > out/last.md
+AGENT
+cat > "$H2/bidder/ring.conf" <<'CONF'
+AGENT="bash agent.sh"
+DELIVERABLE="out/last.md"
+TIMEOUT=10
+NOTIFY="none"
+CONSUMES="tender.discovered@1"
+EMITS="bid.submitted@1"
+CONF
+cat > "$H2/bidder/agent.sh" <<'AGENT'
+#!/usr/bin/env bash
+mkdir -p out/emit
+ID=$(ls in | head -1); ID=${ID%.json}
+printf '{"bid": "PRT-9", "for": "%s"}\n' "$ID" > out/emit/b.json
+{
+  printf 'accept %s submitted via portal, ref PRT-9\n' "$ID"
+  printf 'emit bid.submitted@1 key=PRT-9 cause=%s ref=PRT-9 file=out/emit/b.json\n' "$ID"
+  printf 'frobnicate %s\n' "$ID"
+  printf 'accept not-an-id whatever\n'
+  printf 'emit bid.submitted@1 key=PARTIAL file=out/emit/b.json'
+} > out/handoffs
+echo "took the one tender in the inbox and submitted a bid for it through the portal under reference PRT-9 today" > out/last.md
+AGENT
+echo "# scout" > "$H2/scout/RUNBOOK.md"; echo "# bidder" > "$H2/bidder/RUNBOOK.md"
+RINGS_HOME="$H2" "$RINGS" run scout > /dev/null 2>&1
+check "$?" "0" "a producing ring passes"
+check "$(find "$H2/spool/items" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" "1" "the run published its emit line"
+T100=$(ls "$H2/spool/items")
+check "$(holib "ho_kv_get '$H2/spool/deliveries/bidder/$T100' state")" "ready" "and the subscriber has it ready"
+greps "the producer ledger line carries the run id" '"run": "' "$H2/scout/ledger.jsonl"
+greps "and the handoff counts" '"handoffs": {"in": 0, "accepted": 0, "rejected": 0, "emitted": 1, "invalid": 0}' "$H2/scout/ledger.jsonl"
+assert "a receipt was written" test -f "$H2/scout/runs/$(holib "ho_kv_get '$H2/spool/items/$T100/manifest' run").receipt"
+
+RINGS_HOME="$H2" "$RINGS" run bidder > /dev/null 2>&1
+check "$?" "0" "a consuming ring passes"
+greps "the prompt named the inbox item" "Inbox: 1 item(s)" "$H2/bidder/.prompt"
+greps "and the id" "$T100  tender.discovered@1  from scout  attempt 1 of 3" "$H2/bidder/.prompt"
+greps "and what it may emit" "You may emit: bid.submitted@1" "$H2/bidder/.prompt"
+check "$(holib "ho_kv_get '$H2/spool/deliveries/bidder/$T100' state")" "accepted" "the decision was applied"
+check "$(find "$H2/spool/items" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" "2" "exactly one new item: the partial last line was ignored"
+BID=""
+for f in "$H2/spool/items"/*; do
+  b=$(basename "$f")
+  [ "$b" = "$T100" ] || BID="$b"
+done
+check "$(holib "ho_kv_get '$H2/spool/items/$BID/manifest' cause")" "$T100" "the bid names its cause"
+RCPT=$(basename "$(find "$H2/bidder/runs" -mindepth 1 -maxdepth 1 -type f | head -1)")
+greps "receipt records the input and its checksum" "in=$T100 $(holib "ho_kv_get '$H2/spool/items/$T100/manifest' sha256") attempt=1" "$H2/bidder/runs/$RCPT"
+greps "receipt records the accept" "accepted=$T100 submitted via portal, ref PRT-9" "$H2/bidder/runs/$RCPT"
+greps "receipt records the emit" "emit=bid.submitted@1 key=PRT-9 -> $BID" "$H2/bidder/runs/$RCPT"
+greps "receipt records the unknown verb as invalid" "invalid=frobnicate" "$H2/bidder/runs/$RCPT"
+greps "receipt records the decision on a foreign id as invalid" "invalid=accept not-an-id" "$H2/bidder/runs/$RCPT"
+greps "the ledger counts match" '"handoffs": {"in": 1, "accepted": 1, "rejected": 0, "emitted": 1, "invalid": 2}' "$H2/bidder/ledger.jsonl"
+assert "in/ still holds this run's payload for inspection" test -f "$H2/bidder/in/$T100.json"
+
 # 13. everything parses under bash 3.2, which is what launchd runs
 for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh; do
   [ -f "$f" ] || continue

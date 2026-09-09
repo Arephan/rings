@@ -10,6 +10,9 @@
 # macOS and under modern bash on Linux. No associative arrays, no ${var^^},
 # no mapfile.
 
+# shellcheck source=./handoffs.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/handoffs.sh"
+
 ring_run() {
   local dir="$1"
   [ -d "$dir" ] || { echo "rings: no such ring: $dir" >&2; return 2; }
@@ -28,6 +31,14 @@ ring_run() {
   notify="${NOTIFY:-stdout}"
   max_runs="${MAX_RUNS_PER_DAY:-0}"
   prompt_mode="${PROMPT_MODE:-arg}"
+
+  local ring_id run_id inbox_max ho_on inbox ho_block ho_counts
+  ring_id=$(basename "$dir")
+  run_id=$(ho_run_id)
+  inbox_max="${INBOX_MAX:-10}"
+  ho_on=0
+  inbox=""; ho_block=""; ho_counts=""
+  ho_active "$dir" && ho_on=1
 
   local log ledger lock started rc dpath
   log="$dir/ring.log"
@@ -114,6 +125,16 @@ ring_run() {
     rm -f -- "$dpath"
   fi
 
+  # --- handoffs: clear last run's candidates and inbox, reconcile the spool, and
+  # lease what is waiting. The agent sees the result as a block in the prompt.
+  if [ "$ho_on" -eq 1 ]; then
+    rm -rf "$dir/in" "$dir/out/emit" "$dir/out/handoffs"
+    mkdir -p "$dir/in" "$dir/out/emit" "$dir/runs"
+    ho_reconcile "$ring_id" "$(date +%s)"
+    inbox=$(ho_lease "$ring_id" "$run_id" "$inbox_max" "$timeout_s" "$dir/in")
+    ho_block=$(ho_prompt_block "$dir" "$inbox")
+  fi
+
   ring_log "$log" "RUN START"
   if [ -x "$dir/hooks/pre.sh" ]; then
     RING_DIR="$dir" RING_NAME="$name" "$dir/hooks/pre.sh" >> "$log" 2>&1
@@ -145,7 +166,8 @@ Do not repeat it. Report what changed, or find something new."
 Writing ${deliverable} is the deliverable. If you finish without writing it,
 this run produced nothing and will be recorded as a failure."
   fi
-  prompt="${runbook}${context}"
+  prompt="${runbook}${context}${ho_block}"
+  [ "$ho_on" -eq 1 ] && printf '%s' "$prompt" > "$dir/.prompt"
 
   # --- act, under a hard wall clock. An agent that hangs must not hold the lock
   # until the next reboot.
@@ -202,7 +224,12 @@ this run produced nothing and will be recorded as a failure."
     RING_DIR="$dir" RING_NAME="$name" RING_VERDICT="$verdict" "$dir/hooks/post.sh" >> "$log" 2>&1
   fi
 
-  ring_ledger_append "$ledger" "$name" "$started" "$rc" "$verdict" "$detail"
+  # --- handoffs: publish what came back, apply decisions, release the rest, and
+  # write the receipt. Before the ledger line so the counts land in it.
+  if [ "$ho_on" -eq 1 ]; then
+    ho_counts=$(ho_settle "$dir" "$ring_id" "$run_id" "$started" "$rc" "$verdict" "$inbox")
+  fi
+  ring_ledger_append "$ledger" "$name" "$started" "$rc" "$verdict" "$detail" "$run_id" "$ho_counts"
 
   # --- notify: a ring reports its output, or reports that it failed. It never
   # reports that it ran. "I woke up" is not news.
@@ -288,12 +315,17 @@ ring_json_escape() {
 }
 
 ring_ledger_append() {
-  local ledger name started rc verdict detail ended
-  ledger="$1"; name="$2"; started="$3"; rc="$4"; verdict="$5"; detail="$6"
+  # ring_ledger_append <ledger> <name> <started> <rc> <verdict> <detail> [run] [extra json fragment]
+  local ledger name started rc verdict detail ended run extra
+  ledger="$1"; name="$2"; started="$3"; rc="$4"; verdict="$5"; detail="$6"; run="${7:-}"; extra="${8:-}"
   ended=$(date -u +%FT%TZ)
-  printf '{"ring": "%s", "started": "%s", "ended": "%s", "rc": %s, "verdict": "%s", "detail": "%s"}\n' \
-    "$(ring_json_escape "$name")" "$started" "$ended" "$rc" "$verdict" "$(ring_json_escape "$detail")" \
-    >> "$ledger"
+  {
+    printf '{"ring": "%s", "started": "%s", "ended": "%s", "rc": %s, "verdict": "%s", "detail": "%s"' \
+      "$(ring_json_escape "$name")" "$started" "$ended" "$rc" "$verdict" "$(ring_json_escape "$detail")"
+    [ -n "$run" ] && printf ', "run": "%s"' "$run"
+    [ -n "$extra" ] && printf ', %s' "$extra"
+    printf '}\n'
+  } >> "$ledger"
 }
 
 ring_notify() {

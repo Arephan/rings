@@ -344,3 +344,130 @@ ho_retry() {
   fi
   echo "ready $1 for $2"
 }
+
+# --- the run -----------------------------------------------------------------
+
+# ho_prompt_block <ring dir> <inbox tsv> — the HANDOFFS text appended to the prompt.
+ho_prompt_block() {
+  local dir="$1" inbox="$2" n emits id type from att max
+  n=0
+  [ -n "$inbox" ] && n=$(printf '%s\n' "$inbox" | grep -c .)
+  emits=$(ho_ring_types "$dir" EMITS | tr '\n' ' ' | sed 's/ $//')
+  printf '\n\n===============================================================================\n'
+  printf 'HANDOFFS\n'
+  printf '===============================================================================\n'
+  if [ "$n" -eq 0 ]; then
+    printf 'Inbox: nothing is waiting for this ring.\n'
+  else
+    printf 'Inbox: %s item(s) leased to this run. Payloads are in in/.\n' "$n"
+    while IFS="$(printf '\t')" read -r id type from att max; do
+      [ -n "$id" ] || continue
+      printf '  %s  %s  from %s  attempt %s of %s  in/%s.json\n' "$id" "$type" "$from" "$att" "$max" "$id"
+    done <<INBOX
+$inbox
+INBOX
+    printf '\nAn item on attempt 2 or more was put in front of a previous run that did not\n'
+    printf 'decide it. Before repeating any action in the world for such an item, check\n'
+    printf 'whether that action already happened.\n\n'
+    printf 'Decide every item. Write one line per decision to out/handoffs:\n'
+    printf '  accept <id> <note>         you acted on it, or it needed no action\n'
+    printf '  reject <id> <reason>       it does not qualify; the reason goes back to the producer\n'
+    printf 'An item you write nothing about returns to the queue and counts as an attempt.\n'
+  fi
+  if [ -n "$emits" ]; then
+    printf '\nTo hand work on, write the payload to a file under out/emit/ and add one line\n'
+    printf 'to out/handoffs:\n'
+    printf '  emit <type> key=<natural key> [cause=<inbox id>] [ref=<external id or URL>] file=<path>\n'
+    printf 'You may emit: %s\n' "$emits"
+  fi
+}
+
+# ho_settle <ring dir> <ring> <run> <started> <rc> <verdict> <inbox tsv>
+# After the agent: publish candidates, then apply decisions, then release what
+# is still leased. That order is deliberate — see docs/handoffs.md, "What the
+# runner does". Writes runs/<run>.receipt and prints the ledger fragment.
+ho_settle() {
+  local dir="$1" ring="$2" run="$3" started="$4" rc="$5" verdict="$6" inbox="$7"
+  local receipt hf line verb id type key cause ref file tok res rest
+  local nin na nr ne ni att sha
+  receipt="$dir/runs/$run.receipt"
+  hf="$dir/out/handoffs"
+  nin=0; na=0; nr=0; ne=0; ni=0
+  mkdir -p "$dir/runs"
+  {
+    echo "run=$run"
+    echo "ring=$ring"
+    echo "started=$started"
+    echo "ended=$(ho_now)"
+    echo "rc=$rc"
+    echo "verdict=$verdict"
+    [ -f "$dir/.prompt" ] && echo "prompt_sha256=$(ho_sha256 "$dir/.prompt")"
+  } > "$receipt"
+
+  while IFS="$(printf '\t')" read -r id type rest att rest; do
+    [ -n "$id" ] || continue
+    nin=$((nin + 1))
+    sha=$(ho_kv_get "$(ho_spool)/items/$id/manifest" sha256)
+    echo "in=$id $sha attempt=$att" >> "$receipt"
+  done <<INBOX
+$inbox
+INBOX
+
+  if [ -f "$hf" ]; then
+    # 1. publish. `read` returns non-zero on an unterminated last line, so a run
+    #    killed mid-write cannot publish half a candidate.
+    while IFS= read -r line; do
+      case "$line" in emit\ *) ;; *) continue ;; esac
+      # shellcheck disable=SC2086
+      set -- $line
+      type="${2:-}"
+      if [ $# -ge 2 ]; then shift 2; else set --; fi
+      key=""; cause=""; ref=""; file=""
+      for tok in "$@"; do
+        case "$tok" in
+          key=*)   key=${tok#key=} ;;
+          cause=*) cause=${tok#cause=} ;;
+          ref=*)   ref=${tok#ref=} ;;
+          file=*)  file=${tok#file=} ;;
+        esac
+      done
+      case "$file" in '' ) file="$dir/out/emit/.missing" ;; /*) ;; *) file="$dir/$file" ;; esac
+      res=$(ho_publish "$ring" "$run" "$type" "$key" "$cause" "$ref" "$file")
+      case "$res" in
+        ok\ *) ne=$((ne + 1)); echo "emit=$type key=$key -> ${res#ok }" >> "$receipt" ;;
+        *)     ni=$((ni + 1)); echo "invalid=$line — ${res#refused }" >> "$receipt" ;;
+      esac
+    done < "$hf"
+
+    # 2. decisions
+    while IFS= read -r line; do
+      case "$line" in
+        '' | emit\ *) continue ;;
+        accept\ * | reject\ *) ;;
+        *) ni=$((ni + 1)); echo "invalid=$line — not accept, reject or emit" >> "$receipt"; continue ;;
+      esac
+      # shellcheck disable=SC2086
+      set -- $line
+      verb="$1"; id="${2:-}"
+      if [ $# -ge 2 ]; then shift 2; else set --; fi
+      rest="$*"
+      res=$(ho_decide "$ring" "$run" "$verb" "$id" "$rest")
+      if [ "$res" = "ok" ]; then
+        if [ "$verb" = "accept" ]; then
+          na=$((na + 1)); echo "accepted=$id $rest" >> "$receipt"
+        else
+          nr=$((nr + 1)); echo "rejected=$id $rest" >> "$receipt"
+        fi
+      else
+        ni=$((ni + 1)); echo "invalid=$line — ${res#invalid }" >> "$receipt"
+      fi
+    done < "$hf"
+  fi
+
+  # 3. release everything this run was handed and did not decide
+  ho_release_run "$ring" "$run"
+
+  echo "counts=in:$nin accepted:$na rejected:$nr emitted:$ne invalid:$ni" >> "$receipt"
+  printf '"handoffs": {"in": %s, "accepted": %s, "rejected": %s, "emitted": %s, "invalid": %s}' \
+    "$nin" "$na" "$nr" "$ne" "$ni"
+}

@@ -11,8 +11,6 @@ RINGS_HOME="${RINGS_HOME:-$HOME/.rings}"
 . "$SELF/lib/ring.sh"
 # shellcheck source=../lib/contracts.sh
 . "$SELF/lib/contracts.sh"
-# shellcheck source=../lib/handoffs.sh
-. "$SELF/lib/handoffs.sh"
 
 usage() {
   cat <<'EOF'
@@ -68,6 +66,8 @@ cmd_new() {
 .lock/
 .prev/
 .guard.err
+.prompt
+in/
 EOF
   if [ ! -f "$RINGS_HOME/rings.conf" ]; then
     sed 's/__APEX__/the one outcome every ring here is for/' "$SELF/template/rings.conf" \
