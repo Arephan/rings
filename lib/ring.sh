@@ -228,7 +228,15 @@ ring_log() {
 }
 
 ring_mtime() {
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0
+  # GNU stat first, BSD second. The order matters and so does the digit check:
+  # GNU `stat -f %m` does not fail on a file, it prints "?" and exits 0, and a
+  # "?" reaching an arithmetic expansion aborts the caller rather than the sum.
+  local m
+  m=$(stat -c %Y "$1" 2>/dev/null) || m=$(stat -f %m "$1" 2>/dev/null) || m=""
+  case "$m" in
+    '' | *[!0-9]*) echo 0 ;;
+    *) echo "$m" ;;
+  esac
 }
 
 ring_timeout_bin() {

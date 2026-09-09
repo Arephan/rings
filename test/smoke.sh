@@ -215,6 +215,13 @@ greps "goals groups a ring under the sink it serves" 'producer' "$TMP/g1.out"
 greps "goals names rings serving no outcome" 'serving no stated outcome' "$TMP/g1.out"
 greps "a sink label may contain spaces" 'Machine still verified' "$TMP/g1.out"
 
+# 12e. every age check depends on this being a number on both stats
+MT=$(bash -c ". '$ROOT/lib/ring.sh'; ring_mtime '$ROOT/README.md'")
+case "$MT" in
+  '' | *[!0-9]*) bad "ring_mtime returns digits, not whatever stat printed" ;;
+  *)             ok  "ring_mtime returns digits, not whatever stat printed" ;;
+esac
+
 # 13. everything parses under bash 3.2, which is what launchd runs
 for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh; do
   [ -f "$f" ] || continue
