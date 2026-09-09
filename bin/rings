@@ -994,7 +994,13 @@ cmd_trace() {
 cmd_feed() {
   local n="50" json=0 a ev first ts kind ring id type text
   for a in "$@"; do
-    case "$a" in --json) json=1 ;; *[!0-9]*) die "usage: rings feed [n] [--json]" ;; *) n="$a" ;; esac
+    # zero is not a count. BSD head reads the whole file for -n 0, so asking for
+    # nothing would print everything.
+    case "$a" in
+      --json) json=1 ;;
+      '' | *[!0-9]*) die "usage: rings feed [n] [--json]" ;;
+      *) n=$(printf '%s' "$a" | sed -e 's/^0*//'); [ -n "$n" ] || die "usage: rings feed [n] [--json]" ;;
+    esac
   done
   ev=$(ho_events | sort -t "$(printf '\t')" -k1,1r | head -n "$n")
   if [ "$json" -eq 1 ]; then

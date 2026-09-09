@@ -616,6 +616,12 @@ greps "and lists the chain under it" 'tender.discovered@1' "$TMP/g5.out"
 check "$(grep -ci 'bad substitution' "$TMP/g5.out")" "0" "and bash printed no bad substitution"
 check "$(holib "RINGS_HOME='$H5' ho_type_sink contract.signed@1")" "revenue" "the type still knows its sink"
 
+# 24. rings feed 0 is a usage error, not the whole feed
+RINGS_HOME="$H2" "$RINGS" feed 0 > "$TMP/feed0.out" 2>&1
+check "$?" "1" "feed 0 exits 1"
+greps "and prints the usage" 'usage: rings feed' "$TMP/feed0.out"
+check "$(RINGS_HOME="$H2" "$RINGS" feed 007 | grep -c .)" "7" "a padded count is still a count"
+
 # 13. everything parses under bash 3.2, which is what launchd runs
 for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh "$ROOT"/examples/*/types/*/accept.sh; do
   [ -f "$f" ] || continue
