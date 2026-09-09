@@ -3,12 +3,14 @@
 # https://github.com/Arephan/rings
 set -uo pipefail
 
-RINGS_VERSION="0.1.0"
+RINGS_VERSION="0.2.0"
 SELF=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 RINGS_HOME="${RINGS_HOME:-$HOME/.rings}"
 
 # shellcheck source=../lib/ring.sh
 . "$SELF/lib/ring.sh"
+# shellcheck source=../lib/contracts.sh
+. "$SELF/lib/contracts.sh"
 
 usage() {
   cat <<'EOF'
@@ -25,10 +27,13 @@ rings — one ring is one agent loop: trigger, goal, verifier, stop, memory.
   rings uninstall <name>      unregister the trigger, keep the ring
   rings logs <name> [n]       tail the ring log
   rings chain                 the dependency graph across rings
+  rings contracts [--json]    every declared handoff, and whether it is real
+  rings goals                 every ring under the outcome it serves
   rings version
 
 Rings live in $RINGS_HOME (override with RINGS_HOME). A ring is a directory
-with a ring.conf and a RUNBOOK.md; everything else is optional.
+with a ring.conf and a RUNBOOK.md; everything else is optional. The fleet's own
+file is $RINGS_HOME/rings.conf: the outcome all of this is supposed to add up to.
 EOF
 }
 
@@ -81,6 +86,11 @@ cmd_new() {
 .prev/
 .guard.err
 EOF
+  if [ ! -f "$RINGS_HOME/rings.conf" ]; then
+    sed 's/__APEX__/the one outcome every ring here is for/' "$SELF/template/rings.conf" \
+      > "$RINGS_HOME/rings.conf"
+    echo "created $RINGS_HOME/rings.conf — say what the fleet is for before it grows"
+  fi
   echo "created $dir"
   echo
   echo "next:"
@@ -130,6 +140,9 @@ cmd_status() {
   echo "timeout:     $(conf_get "$dir" TIMEOUT 900)s"
   echo "budget:      $(conf_get "$dir" MAX_RUNS_PER_DAY 0) runs/day (0 = unlimited)"
   echo "needs:       $(conf_get "$dir" NEEDS '(nothing)')"
+  echo "emits:       $(conf_get "$dir" EMITS '(nothing)')"
+  echo "consumes:    $(conf_get "$dir" CONSUMES '(nothing)')"
+  echo "serves:      $(conf_get "$dir" SERVES '(no stated outcome)')"
   [ -f "$dir/.halt" ] && echo "HALTED:      $(cat "$dir/.halt")"
   [ -d "$dir/.lock" ] && echo "running:     pid $(cat "$dir/.lock/pid" 2>/dev/null)"
   echo
@@ -223,6 +236,28 @@ cmd_doctor() {
       issues=$((issues + 1))
     fi
   done
+
+  # Contracts are checked across the fleet, not per ring: the failure is always
+  # between two rings, and neither of them can see it alone.
+  local scan dangling
+  scan=$(contracts_scan)
+  while IFS="$(printf '\t')" read -r pr em carrier rel fmt ttl present age rows dec wir cons str st why; do
+    [ -n "$pr" ] || continue
+    [ "$st" = "flowing" ] && continue
+    printf '%-13s%s\n' "[$st]" "$pr.$em — $why"
+    issues=$((issues + 1))
+  done <<SCAN
+$scan
+SCAN
+  dangling=$(contracts_dangling)
+  while IFS="$(printf '\t')" read -r cn ref; do
+    [ -n "$cn" ] || continue
+    printf '%-13s%s\n' "[dangling]" "$cn consumes $ref, which no ring emits"
+    issues=$((issues + 1))
+  done <<DANG
+$dangling
+DANG
+
   echo
   if [ "$issues" -eq 0 ]; then
     echo "$total ring(s), nothing to report."
@@ -444,6 +479,161 @@ cmd_chain() {
   echo "a downstream ring reads it and skips when it is stale. Nothing orchestrates."
 }
 
+# --- contracts / goals -------------------------------------------------------
+
+fleet_get() {
+  # fleet_get <KEY> [default] — read one value from $RINGS_HOME/rings.conf
+  local v
+  [ -f "$RINGS_HOME/rings.conf" ] || { printf '%s' "${2:-}"; return; }
+  v=$(bash -c ". '$RINGS_HOME/rings.conf' 2>/dev/null; printf '%s' \"\${$1:-}\"")
+  [ -z "$v" ] && v="${2:-}"
+  printf '%s' "$v"
+}
+
+cmd_contracts() {
+  local scan dangling total broken first dang
+  scan=$(contracts_scan)
+  dangling=$(contracts_dangling)
+  total=0
+  broken=0
+
+  if [ "${1:-}" = "--json" ]; then
+    echo '{'
+    printf '  "generated": "%s",\n' "$(date -u +%FT%TZ)"
+    printf '  "apex": "%s",\n' "$(ring_json_escape "$(fleet_get APEX '')")"
+    echo '  "contracts": ['
+    first=1
+    while IFS="$(printf '\t')" read -r pr em carrier rel fmt ttl present age rows dec wir cons str st why; do
+      [ -n "$pr" ] || continue
+      [ "$first" -eq 1 ] || printf ',\n'
+      first=0
+      printf '    {"id": "%s.%s", "from": "%s", "carrier": "%s", "format": "%s", "ttlHours": %s, ' \
+        "$pr" "$em" "$pr" "$rel" "$fmt" "$ttl"
+      printf '"present": %s, "ageSeconds": %s, "rows": %s, "declared": %s, "wired": %s, ' \
+        "$([ "$present" = 1 ] && echo true || echo false)" "$age" \
+        "$([ "$rows" = "-" ] && echo null || echo "$rows")" "$dec" "$wir"
+      printf '"consumers": "%s", "stranded": %s, "status": "%s", "why": "%s"}' \
+        "$cons" "$str" "$st" "$(ring_json_escape "$why")"
+    done <<SCAN
+$scan
+SCAN
+    [ "$first" -eq 1 ] || printf '\n'
+    echo '  ]'
+    echo '}'
+    return 0
+  fi
+
+  printf '%-24s %-32s %-9s %s\n' CONTRACT CARRIER STATUS CONSUMERS
+  while IFS="$(printf '\t')" read -r pr em carrier rel fmt ttl present age rows dec wir cons str st why; do
+    [ -n "$pr" ] || continue
+    total=$((total + 1))
+    [ "$st" = "flowing" ] || broken=$((broken + 1))
+    printf '%-24s %-32s %-9s %s\n' "$pr.$em" "$pr/$rel" "$st" "$cons"
+  done <<SCAN
+$scan
+SCAN
+
+  if [ "$total" -eq 0 ]; then
+    echo
+    echo "No ring declares EMITS. A contract is two lines of ring.conf:"
+    echo '  EMITS="findings:out/findings.jsonl:jsonl:72"   # name:path:format:shelf life (h)'
+    echo '  CONSUMES="scout.findings:kind=lead"            # in the ring downstream'
+    echo
+    echo "See docs/contracts.md."
+    return 0
+  fi
+
+  echo
+  while IFS="$(printf '\t')" read -r pr em carrier rel fmt ttl present age rows dec wir cons str st why; do
+    [ -n "$pr" ] || continue
+    [ "$st" = "flowing" ] && continue
+    printf '  %-11s %s — %s\n' "[$st]" "$pr.$em" "$why"
+  done <<SCAN
+$scan
+SCAN
+
+  dang=0
+  while IFS="$(printf '\t')" read -r cn ref; do
+    [ -n "$cn" ] || continue
+    dang=$((dang + 1))
+    printf '  %-11s %s consumes %s, which no ring emits\n' "[dangling]" "$cn" "$ref"
+  done <<DANG
+$dangling
+DANG
+
+  echo
+  if [ "$broken" -eq 0 ] && [ "$dang" -eq 0 ]; then
+    echo "$total contract(s), all flowing."
+  else
+    if [ "$dang" -gt 0 ]; then
+      echo "$total contract(s), $broken not flowing, $dang dangling consume(s)."
+    else
+      echo "$total contract(s), $broken not flowing."
+    fi
+  fi
+}
+
+cmd_goals() {
+  local apex sinks sink id label d n serves hit orphans oldifs
+  apex=$(fleet_get APEX "")
+  sinks=$(fleet_get SINKS "")
+
+  if [ -z "$apex" ] && [ -z "$sinks" ]; then
+    echo "No $RINGS_HOME/rings.conf — nothing here states what the fleet is for."
+    echo
+    echo "Write one:"
+    echo '  APEX="the one outcome every ring here is for"'
+    echo '  SINKS="revenue:Money in proof:Machine verified"'
+    echo
+    echo 'Then put SERVES="revenue" in each ring.conf. A ring that serves nothing'
+    echo "is a ring you are paying for and cannot justify."
+    return 0
+  fi
+
+  echo "apex: ${apex:-(unstated)}"
+  echo
+  orphans=""
+  oldifs="$IFS"
+  IFS=","
+  for sink in $sinks; do
+    IFS="$oldifs"
+    sink=$(printf '%s' "$sink" | sed -e 's/^ *//' -e 's/ *$//')
+    [ -n "$sink" ] || continue
+    id=${sink%%:*}
+    label=${sink#*:}
+    [ "$label" = "$id" ] && label=""
+    printf '  %s%s\n' "$id" "${label:+  — $label}"
+    hit=0
+    for d in $(each_ring); do
+      n=$(basename "$d")
+      serves=$(conf_get "$d" SERVES "")
+      [ "$serves" = "$id" ] || continue
+      hit=1
+      printf '      %-16s %s\n' "$n" "$(conf_get "$d" EMITS '(emits nothing)')"
+    done
+    [ "$hit" -eq 0 ] && echo "      (nothing feeds this)"
+    echo
+    IFS=","
+  done
+  IFS="$oldifs"
+
+  for d in $(each_ring); do
+    n=$(basename "$d")
+    serves=$(conf_get "$d" SERVES "")
+    hit=0
+    IFS=","
+    for sink in $sinks; do
+      [ "${sink%%:*}" = "$serves" ] && hit=1
+    done
+    IFS="$oldifs"
+    [ "$hit" -eq 0 ] && orphans="$orphans $n"
+  done
+  if [ -n "$orphans" ]; then
+    echo "  serving no stated outcome:$orphans"
+    echo "      Give each a SERVES that names a sink above, or stop paying for it."
+  fi
+}
+
 # --- main --------------------------------------------------------------------
 
 mkdir -p "$RINGS_HOME"
@@ -461,6 +651,8 @@ case "$cmd" in
   uninstall)  cmd_uninstall "$@" ;;
   logs)       cmd_logs "$@" ;;
   chain)      cmd_chain "$@" ;;
+  contracts)  cmd_contracts "$@" ;;
+  goals)      cmd_goals "$@" ;;
   version|-v|--version) echo "rings $RINGS_VERSION" ;;
   help|-h|--help) usage ;;
   *)          usage; exit 1 ;;

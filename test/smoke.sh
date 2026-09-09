@@ -164,8 +164,59 @@ check "$(printf '%s\n' "$CT" | grep -c '<dict>')" "2" "hours and weekday transla
 printf '%s\n' "$CT" > "$TMP/cron.out"
 greps "weekday survives translation" '<key>Weekday</key><integer>1</integer>' "$TMP/cron.out"
 
+# 12c. contracts are verified, not taken on faith
+mkring producer 'mkdir -p out; echo "x" > out/last.md'
+mkdir -p "$RINGS_HOME/producer/out"
+printf '%s\n' '{"kind": "lead", "id": 1}' '{"kind": "tender", "id": 2}' > "$RINGS_HOME/producer/out/rows.jsonl"
+echo 'EMITS="rows:out/rows.jsonl:jsonl:72"' >> "$RINGS_HOME/producer/ring.conf"
+echo 'SERVES="revenue"' >> "$RINGS_HOME/producer/ring.conf"
+
+"$RINGS" contracts > "$TMP/c1.out" 2>&1
+greps "a carrier nobody consumes is an orphan" 'orphan' "$TMP/c1.out"
+
+mkring taker 'exit 0'
+echo 'CONSUMES="producer.rows:kind=lead"' >> "$RINGS_HOME/taker/ring.conf"
+"$RINGS" contracts > "$TMP/c2.out" 2>&1
+greps "a declared consumer that never names the file is unwired" 'taker(unwired)' "$TMP/c2.out"
+
+echo 'Read ../producer/out/rows.jsonl and take the leads.' >> "$RINGS_HOME/taker/RUNBOOK.md"
+"$RINGS" contracts > "$TMP/c3.out" 2>&1
+greps "naming the carrier wires the consumer" 'taker\[kind=lead\]' "$TMP/c3.out"
+greps "rows no filter claims are counted" '1 of 2 rows' "$TMP/c3.out"
+
+echo 'Also read ../producer/out/rows.jsonl for tenders.' >> "$RINGS_HOME/producer/RUNBOOK.md"
+echo 'CONSUMES="producer.rows:kind=lead producer.rows:kind=tender"' > "$TMP/consumes"
+sed -i.bak 's|^CONSUMES=.*|CONSUMES="producer.rows:kind=lead producer.rows:kind=tender"|' "$RINGS_HOME/taker/ring.conf"
+"$RINGS" contracts > "$TMP/c4.out" 2>&1
+greps "claiming every row clears the leak" 'all flowing' "$TMP/c4.out"
+
+mkring ghosttaker 'exit 0'
+echo 'CONSUMES="nobody.nothing"' >> "$RINGS_HOME/ghosttaker/ring.conf"
+"$RINGS" contracts > "$TMP/c5.out" 2>&1
+greps "consuming an emit nobody declares is dangling" 'dangling' "$TMP/c5.out"
+
+"$RINGS" doctor > "$TMP/c6.out" 2>&1
+greps "doctor reports contract findings too" 'dangling' "$TMP/c6.out"
+
+"$RINGS" contracts --json > "$TMP/c7.json" 2>&1
+if command -v python3 > /dev/null 2>&1; then
+  assert "contracts --json is valid json" python3 -c "import json,sys; json.load(open('$TMP/c7.json'))"
+else
+  greps "contracts --json emits a contracts array" '"contracts"' "$TMP/c7.json"
+fi
+
+# 12d. a ring under no stated outcome is named as such
+cat > "$RINGS_HOME/rings.conf" <<'FLEET'
+APEX="one outcome"
+SINKS="revenue:Money in, proof:Machine still verified"
+FLEET
+"$RINGS" goals > "$TMP/g1.out" 2>&1
+greps "goals groups a ring under the sink it serves" 'producer' "$TMP/g1.out"
+greps "goals names rings serving no outcome" 'serving no stated outcome' "$TMP/g1.out"
+greps "a sink label may contain spaces" 'Machine still verified' "$TMP/g1.out"
+
 # 13. everything parses under bash 3.2, which is what launchd runs
-for f in "$ROOT/bin/rings" "$ROOT/lib/ring.sh" "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh; do
+for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh; do
   [ -f "$f" ] || continue
   /bin/bash -n "$f" 2>/dev/null || bad "$(basename "$f") does not parse under /bin/bash"
 done

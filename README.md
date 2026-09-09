@@ -128,8 +128,10 @@ $ rings doctor
 [unverified] notes declares no DELIVERABLE and has no hooks/verify.sh — nothing can tell you it worked
 [stuck]      crawler holds a lock 41203s old (stale after 1800s) — next run will reclaim it
 [halted]     old-thing is halted: 2026-04-02T11:04:19Z paused while the API changed
+[orphan]     price-watch.prices — written every run, and no ring consumes it
+[leaking]    inbox-sweep.mail — 34 of 51 rows match no consumer filter
 
-8 ring(s), 8 finding(s).
+8 ring(s), 10 finding(s).
 ```
 
 Every one of those is a real failure mode with a real cost. `rings doctor` is
@@ -155,6 +157,60 @@ upstream file's age and say so. See [examples/chain-demo](examples/chain-demo) a
 This is deliberately less than a DAG engine. A DAG engine is a process that can
 crash, taking every loop with it. Two rings and a file cannot.
 
+## Contracts
+
+`NEEDS` draws an arrow. A contract is the same handoff written where it can be
+checked — and then checked:
+
+```bash
+# scout/ring.conf
+EMITS="leads:out/leads.jsonl:jsonl:72"    # name:path:format:shelf life in hours
+
+# bidder/ring.conf
+CONSUMES="scout.leads:kind=lead"          # and the rows it takes
+```
+
+```console
+$ rings contracts
+CONTRACT                 CARRIER                          STATUS    CONSUMERS
+scout.leads              scout/out/leads.jsonl            leaking   bidder[kind=lead],filer(unwired)
+digest.summary           digest/out/summary.md            orphan    -
+
+  [leaking]   scout.leads — 1 of 3 rows match no consumer filter
+  [orphan]    digest.summary — written every run, and no ring consumes it
+```
+
+Both of those are the same failure: a fleet where every ring passes and the work
+still does not come out. One file is written hourly and read by nobody; one kind
+of row is produced and claimed by nobody. Neither ring involved can see it —
+each is individually healthy — so it has to be checked across the fleet.
+
+A declaration does not count as wiring. A consumer only counts if that ring's own
+runbook, scripts or hooks name the file; otherwise it is reported `(unwired)`.
+Its own `CONSUMES=` line is excluded, because a claim is not evidence for itself.
+
+`RUNBOOK.md` is a ring's contract with you. `EMITS`/`CONSUMES` is its contract
+with the rest of the fleet, and `SERVES` says which outcome in
+`$RINGS_HOME/rings.conf` it is ultimately for:
+
+```console
+$ rings goals
+apex: signed work, and nothing that does not lead to it
+
+  revenue  — Money in
+      scout            leads:out/leads.jsonl:jsonl:72
+      bidder           (emits nothing)
+
+  serving no stated outcome: filer
+```
+
+`rings contracts --json` prints the verified graph for anything you want to build
+on top. Keep no second copy of it — a dashboard with its own registry of what
+feeds what starts lying to you on day two.
+
+See [docs/contracts.md](docs/contracts.md) and
+[examples/contract-demo](examples/contract-demo), which ships deliberately broken.
+
 ## Commands
 
 ```
@@ -169,6 +225,8 @@ rings install <name>        register its trigger (launchd / systemd / cron)
 rings uninstall <name>      unregister the trigger, keep the ring
 rings logs <name> [n]       tail the ring log
 rings chain                 the dependency graph across rings
+rings contracts [--json]    every declared handoff, and whether it is real
+rings goals                 every ring under the outcome it serves
 ```
 
 ## Notifications
@@ -184,16 +242,18 @@ rings chain                 the dependency graph across rings
 ## Layout
 
 ```
-~/.rings/<name>/
-├── ring.conf        the five primitives
-├── RUNBOOK.md       the contract — this is the prompt
-├── hooks/
-│   ├── pre.sh       runs before the agent (check inputs, fetch state)
-│   ├── verify.sh    decides whether the run counted
-│   └── post.sh      runs after the verdict, gets $RING_VERDICT
-├── out/             the deliverable lands here
-├── ledger.jsonl     one line per run, forever
-└── ring.log         what happened
+~/.rings/
+├── rings.conf           what the fleet is for: APEX and SINKS
+└── <name>/
+    ├── ring.conf        the five primitives, plus EMITS / CONSUMES / SERVES
+    ├── RUNBOOK.md       the contract — this is the prompt
+    ├── hooks/
+    │   ├── pre.sh       runs before the agent (check inputs, fetch state)
+    │   ├── verify.sh    decides whether the run counted
+    │   └── post.sh      runs after the verdict, gets $RING_VERDICT
+    ├── out/             the deliverable lands here
+    ├── ledger.jsonl     one line per run, forever
+    └── ring.log         what happened
 ```
 
 `RUNBOOK.md` is the whole prompt, plus a short generated block naming the ring, the

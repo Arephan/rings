@@ -39,6 +39,11 @@ NEEDS="scout"
 report starts coming out wrong you can see in one command where its inputs came
 from. It does not enforce anything.
 
+For the version that gets checked — the carrier file, its shelf life, and
+whether anything downstream actually reads it — declare `EMITS` and `CONSUMES`
+as well, and see [contracts.md](contracts.md). A drawing cannot tell you that a
+file is written every hour and read by nobody; that check can.
+
 ## Enforcing it
 
 The check that actually protects a downstream ring goes in `hooks/pre.sh`:

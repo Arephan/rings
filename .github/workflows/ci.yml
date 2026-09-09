@@ -25,4 +25,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - run: shellcheck -s bash -e SC1090,SC1091,SC2034 bin/rings lib/ring.sh test/smoke.sh template/hooks/*.sh examples/*/agent.sh examples/*/*/agent.sh examples/*/*/hooks/*.sh
+      - run: shellcheck -s bash -e SC1090,SC1091,SC2034 bin/rings lib/*.sh test/smoke.sh template/hooks/*.sh examples/*/agent.sh examples/*/*/agent.sh examples/*/*/hooks/*.sh
