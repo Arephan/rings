@@ -1,15 +1,57 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { Moon, Sun } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
+import { Separator } from '@/components/ui/separator';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { usePoll } from '@/lib/poll';
+import type { Goals } from '@/lib/api';
+import { ago } from '@/lib/format';
+import { FleetView } from '@/views/Fleet';
+import { FunnelView } from '@/views/Funnel';
+import { HandoffsView } from '@/views/HandoffsView';
+import { FeedView } from '@/views/FeedView';
+import { DoctorView } from '@/views/DoctorView';
+import { TraceSheet } from '@/views/TraceSheet';
 
-function App() {
-  const [count, setCount] = useState(0);
-
+export default function App() {
+  const [dark, setDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
+  const [trace, setTrace] = useState<string | null>(null);
+  const goals = usePoll<Goals>('/api/goals');
+  useEffect(() => { document.documentElement.classList.toggle('dark', dark); }, [dark]);
   return (
-    <div className="flex min-h-svh flex-col items-center justify-center gap-4">
-      <h1 className="text-2xl font-semibold">rings</h1>
-      <Button onClick={() => setCount((c) => c + 1)}>Count is {count}</Button>
-    </div>
+    <TooltipProvider>
+      <div className="min-h-screen bg-background text-foreground">
+        <div className="mx-auto max-w-6xl px-6 py-8">
+          <header className="mb-6 flex items-start justify-between gap-6">
+            <div>
+              <h1 className="text-lg font-semibold tracking-tight">rings</h1>
+              <p className="mt-0.5 text-sm text-muted-foreground">
+                {goals.data?.apex ?? 'no apex stated'}{goals.at ? ` · read ${ago(new Date(goals.at).toISOString())}` : ''} · re-read every 5 s, nothing cached
+              </p>
+            </div>
+            <Button variant="ghost" size="icon" aria-label="Toggle theme" onClick={() => setDark(!dark)}>
+              {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            </Button>
+          </header>
+          <Separator className="mb-6" />
+          <Tabs defaultValue="fleet">
+            <TabsList>
+              <TabsTrigger value="fleet">Fleet</TabsTrigger>
+              <TabsTrigger value="funnel">Funnel</TabsTrigger>
+              <TabsTrigger value="handoffs">Handoffs</TabsTrigger>
+              <TabsTrigger value="feed">Feed</TabsTrigger>
+              <TabsTrigger value="doctor">Doctor</TabsTrigger>
+            </TabsList>
+            <TabsContent value="fleet" className="pt-4"><FleetView /></TabsContent>
+            <TabsContent value="funnel" className="pt-4"><FunnelView /></TabsContent>
+            <TabsContent value="handoffs" className="pt-4"><HandoffsView /></TabsContent>
+            <TabsContent value="feed" className="pt-4"><FeedView onOpen={setTrace} /></TabsContent>
+            <TabsContent value="doctor" className="pt-4"><DoctorView /></TabsContent>
+          </Tabs>
+          <TraceSheet id={trace} onClose={() => setTrace(null)} onOpen={setTrace} />
+        </div>
+      </div>
+    </TooltipProvider>
   );
 }
-
-export default App;
