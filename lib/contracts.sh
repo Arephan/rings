@@ -15,6 +15,7 @@ contract_field() { printf '%s' "$1" | cut -d: -f"$2"; }
 contract_emits() {
   local dir="$1" spec name rel fmt ttl
   for spec in $(conf_get "$dir" EMITS ""); do
+    case "$spec" in *@*) continue ;; esac
     name=$(contract_field "$spec" 1)
     rel=$(contract_field "$spec" 2)
     fmt=$(contract_field "$spec" 3)
@@ -37,6 +38,7 @@ contract_emits() {
 contract_consumes() {
   local dir="$1" spec ref filter
   for spec in $(conf_get "$dir" CONSUMES ""); do
+    case "$spec" in *@*) continue ;; esac
     ref=${spec%%:*}
     filter=""
     case "$spec" in *:*) filter=${spec#*:} ;; esac

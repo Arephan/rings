@@ -456,6 +456,53 @@ check "$(RINGS_HOME="$CLEAN" "$RINGS" feed | grep -c .)" "0" "an empty fleet has
 RINGS_HOME="$CLEAN" "$RINGS" handoffs --json > "$TMP/ho-empty.json" 2>&1
 greps "an empty fleet still prints a types array" '"types": \[\]' "$TMP/ho-empty.json"
 
+# 19. handoffs — doctor, list --json, goals
+RINGS_HOME="$H2" "$RINGS" contracts > "$TMP/c8.out" 2>&1
+greps "handoff types are not mistaken for file contracts" 'No ring declares EMITS' "$TMP/c8.out"
+mkdir -p "$H2/closer/out" "$H2/sleeper/out" "$H2/lost/out"
+printf 'AGENT="bash agent.sh"\nDELIVERABLE="out/last.md"\nTIMEOUT=10\nNOTIFY="none"\nEMITS="contract.signed@1"\nSCHEDULE="0 * * * *"\nMAX_RUNS_PER_DAY=24\n' > "$H2/closer/ring.conf"
+echo 'echo "closer ran and had nothing to close this time around which is fine and expected for a demo ring" > out/last.md' > "$H2/closer/agent.sh"
+printf 'AGENT="bash agent.sh"\nDELIVERABLE="out/last.md"\nTIMEOUT=10\nNOTIFY="none"\nCONSUMES="tender.discovered@1"\nMAX_ATTEMPTS=1\n' > "$H2/sleeper/ring.conf"
+echo 'echo "sleeper woke, looked at nothing, and went back to sleep without deciding anything at all today" > out/last.md' > "$H2/sleeper/agent.sh"
+printf 'AGENT="bash agent.sh"\nDELIVERABLE="out/last.md"\nTIMEOUT=10\nNOTIFY="none"\nCONSUMES="nope@1"\n' > "$H2/lost/ring.conf"
+echo 'echo "lost consumes a type that no chain declares and this line only exists to satisfy the verifier" > out/last.md' > "$H2/lost/agent.sh"
+for r in closer sleeper lost; do echo "# $r" > "$H2/$r/RUNBOOK.md"; done
+printf '{"title": "third"}\n' > "$TMP/t3.json"
+T3=$(RINGS_HOME="$H2" "$RINGS" emit scout tender.discovered@1 key=T-300 --file "$TMP/t3.json"); T3=${T3#ok }
+RINGS_HOME="$H2" "$RINGS" run sleeper > /dev/null 2>&1   # marker written; T3 too old for it
+RINGS_HOME="$H2" "$RINGS" retry "$T3" sleeper > /dev/null
+RINGS_HOME="$H2" "$RINGS" run sleeper > /dev/null 2>&1   # leases T3, decides nothing, MAX_ATTEMPTS=1 → dead
+check "$(holib "ho_kv_get '$H2/spool/deliveries/sleeper/$T3' state")" "dead" "setup: sleeper dead-lettered the item"
+holib "ho_kv_set '$H2/spool/deliveries/bidder/$T3' created 2020-01-01T00:00:00Z"
+printf 'SCHEDULE="17,47 * * * *"\n' >> "$H2/bidder/ring.conf"
+rm -f "$H2/spool/deliveries/sleeper/$T100"
+echo "2000-01-01T00:00:00Z" > "$H2/spool/deliveries/sleeper/.since.tender.discovered@1"   # backdate the marker so T100 counts as undelivered
+RINGS_HOME="$H2" "$RINGS" doctor > "$TMP/d.out" 2>&1
+greps "doctor: a type with no gate" '\[ungated\].*tender.discovered@1' "$TMP/d.out"
+greps "doctor: an emitted type nobody consumes" '\[orphan\].*contract.signed@1' "$TMP/d.out"
+greps "doctor: a ring naming an undeclared type" '\[dangling\].*lost.*nope@1' "$TMP/d.out"
+greps "doctor: dead letters" '\[dead-letter\].*sleeper.*'"$T3" "$TMP/d.out"
+greps "doctor: a receipt with refused lines" '\[invalid\].*bidder' "$TMP/d.out"
+greps "doctor: a ready item older than three intervals" '\[backlog\].*bidder' "$TMP/d.out"
+greps "doctor: an item with no delivery record at a subscriber" '\[undelivered\].*'"$T100"'.*sleeper' "$TMP/d.out"
+RINGS_HOME="$H2" "$RINGS" doctor --json > "$TMP/d.json" 2>&1
+if command -v python3 > /dev/null 2>&1; then
+  assert "doctor --json parses with tagged findings" python3 -c "import json; j=json.load(open('$TMP/d.json')); assert any(f['tag']=='dead-letter' for f in j['findings']); assert j['rings']>=5"
+fi
+RINGS_HOME="$H2" "$RINGS" list --json > "$TMP/l.json" 2>&1
+if command -v python3 > /dev/null 2>&1; then
+  assert "list --json parses and counts today's runs" python3 -c "import json; j=json.load(open('$TMP/l.json')); b=[r for r in j['rings'] if r['ring']=='bidder'][0]; assert b['runsToday']>=1; assert b['consumes']==['tender.discovered@1']"
+fi
+RINGS_HOME="$H2" "$RINGS" goals > "$TMP/g2.out" 2>&1
+greps "goals prints the funnel with item counts" 'tender.discovered@1 *2' "$TMP/g2.out"
+greps "and names producers" 'bid.submitted@1 *1 *bidder' "$TMP/g2.out"
+greps "and marks the outcome" 'contract.signed@1 *0.*outcome' "$TMP/g2.out"
+greps "a ring on a chain is not unserved" '^  serving no stated outcome:.*lost' "$TMP/g2.out"
+RINGS_HOME="$H2" "$RINGS" goals --json > "$TMP/g.json" 2>&1
+if command -v python3 > /dev/null 2>&1; then
+  assert "goals --json parses with the chain" python3 -c "import json; j=json.load(open('$TMP/g.json')); c=j['sinks'][0]['chain']; assert c[0]['type']=='tender.discovered@1' and c[0]['items']==2 and c[2]['outcome'] is True; assert 'lost' in j['unserved'] and 'bidder' not in j['unserved']"
+fi
+
 # 13. everything parses under bash 3.2, which is what launchd runs
 for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh; do
   [ -f "$f" ] || continue

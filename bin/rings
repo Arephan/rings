@@ -100,18 +100,45 @@ cmd_run() {
 # --- list / status -----------------------------------------------------------
 
 cmd_list() {
-  local d n sched verdict when halted
-  printf '%-16s %-14s %-11s %-22s %s\n' RING SCHEDULE LAST WHEN STATE
+  local d n sched verdict when halted json first today runs serves em cs t
+  json=0; [ "${1:-}" = "--json" ] && json=1
+  today=$(date -u +%F)
+  if [ "$json" -eq 1 ]; then
+    echo '{'
+    printf '  "generated": "%s",\n' "$(ho_now)"
+    echo '  "rings": ['
+    first=1
+  else
+    printf '%-16s %-14s %-11s %-22s %s\n' RING SCHEDULE LAST WHEN STATE
+  fi
   for d in $(each_ring); do
     n=$(basename "$d")
-    sched=$(conf_get "$d" SCHEDULE "-")
-    verdict=$(last_ledger_field "$d/ledger.jsonl" verdict || echo "never ran")
-    when=$(last_ledger_field "$d/ledger.jsonl" ended || echo "-")
+    sched=$(conf_get "$d" SCHEDULE "")
+    verdict=$(last_ledger_field "$d/ledger.jsonl" verdict || echo "")
+    when=$(last_ledger_field "$d/ledger.jsonl" ended || echo "")
     halted="active"
-    [ -f "$d/.halt" ] && halted="HALTED"
+    [ -f "$d/.halt" ] && halted="halted"
     [ -d "$d/.lock" ] && halted="running"
-    printf '%-16s %-14s %-11s %-22s %s\n' "$n" "$sched" "$verdict" "$when" "$halted"
+    if [ "$json" -eq 1 ]; then
+      runs=0
+      [ -s "$d/ledger.jsonl" ] && runs=$(grep -c "\"started\": \"$today" "$d/ledger.jsonl" | tr -d ' ')
+      serves=$(conf_get "$d" SERVES "")
+      em=""; for t in $(ho_ring_types "$d" EMITS); do em="$em${em:+, }$(ho_json_str "$t")"; done
+      cs=""; for t in $(ho_ring_types "$d" CONSUMES); do cs="$cs${cs:+, }$(ho_json_str "$t")"; done
+      [ "$first" -eq 1 ] || printf ',\n'
+      first=0
+      printf '    {"ring": %s, "schedule": %s, "lastVerdict": %s, "lastEnded": %s, "state": %s, "runsToday": %s, "serves": %s, "emits": [%s], "consumes": [%s]}' \
+        "$(ho_json_str "$n")" "$(ho_json_or_null "$sched")" "$(ho_json_or_null "$verdict")" "$(ho_json_or_null "$when")" \
+        "$(ho_json_str "$halted")" "${runs:-0}" "$(ho_json_or_null "$serves")" "$em" "$cs"
+    else
+      printf '%-16s %-14s %-11s %-22s %s\n' "$n" "${sched:--}" "${verdict:-never ran}" "${when:--}" "$halted"
+    fi
   done
+  if [ "$json" -eq 1 ]; then
+    [ "$first" -eq 1 ] || printf '\n'
+    echo '  ]'
+    echo '}'
+  fi
 }
 
 cmd_status() {
@@ -143,9 +170,31 @@ cmd_status() {
 
 # --- doctor ------------------------------------------------------------------
 
+DOCTOR_FINDINGS=""
+
+doctor_note() {
+  # doctor_note <tag> <text> — one finding; rendered as text or json at the end
+  printf '%s\t%s\n' "$1" "$2" >> "$DOCTOR_FINDINGS"
+}
+
+doctor_interval_seconds() {
+  # doctor_interval_seconds <ring dir> — the gap between two scheduled runs, from
+  # SCHEDULE; a day when there is no schedule. Approximate on purpose.
+  local sched mins hrs nm nh
+  sched=$(conf_get "$1" SCHEDULE "")
+  [ -n "$sched" ] || { echo 86400; return; }
+  mins=$(cron_field_expand "$(echo "$sched" | awk '{print $1}')" 59)
+  hrs=$(cron_field_expand "$(echo "$sched" | awk '{print $2}')" 23)
+  # shellcheck disable=SC2086
+  nm=$(echo $mins | wc -w | tr -d ' '); [ "$nm" -eq 0 ] && nm=60
+  # shellcheck disable=SC2086
+  nh=$(echo $hrs | wc -w | tr -d ' '); [ "$nh" -eq 0 ] && nh=24
+  echo $(( 86400 / (nm * nh) ))
+}
+
 cmd_doctor() {
   local d n issues total
-  issues=0
+  DOCTOR_FINDINGS=$(mktemp); local json=0; [ "${1:-}" = "--json" ] && json=1
   total=0
   for d in $(each_ring); do
     total=$((total + 1))
@@ -155,8 +204,7 @@ cmd_doctor() {
     local sched
     sched=$(conf_get "$d" SCHEDULE "")
     if [ -n "$sched" ] && [ ! -s "$d/ledger.jsonl" ]; then
-      printf '%-13s%s\n' "[dead]" "$n is scheduled ($sched) but has never recorded a run — is the trigger installed?"
-      issues=$((issues + 1))
+      doctor_note dead "$n is scheduled ($sched) but has never recorded a run — is the trigger installed?"
     fi
 
     if [ -s "$d/ledger.jsonl" ]; then
@@ -166,8 +214,7 @@ cmd_doctor() {
       passes=$(printf '%s\n' "$last20" | grep -c '"verdict": "pass"' | tr -d ' ')
       runs=$(printf '%s\n' "$last20" | grep -c '"ring"' | tr -d ' ')
       if [ "$runs" -ge 5 ] && [ "$passes" -eq 0 ]; then
-        printf '%-13s%s\n' "[silent]" "$n has not passed once in its last $runs runs — it is burning calls for nothing"
-        issues=$((issues + 1))
+        doctor_note silent "$n has not passed once in its last $runs runs — it is burning calls for nothing"
       fi
 
       # Stale: scheduled, but the last run is older than a day.
@@ -176,8 +223,7 @@ cmd_doctor() {
       if [ -n "$sched" ] && [ -n "$ended" ]; then
         age=$(( $(date +%s) - $(ring_mtime "$d/ledger.jsonl") ))
         if [ "$age" -gt 86400 ]; then
-          printf '%-13s%s\n' "[stale]" "$n last ran $((age / 3600))h ago but is scheduled $sched"
-          issues=$((issues + 1))
+          doctor_note stale "$n last ran $((age / 3600))h ago but is scheduled $sched"
         fi
       fi
     fi
@@ -187,8 +233,7 @@ cmd_doctor() {
       local kb
       kb=$(( $(wc -c < "$d/ring.log") / 1024 ))
       if [ "$kb" -gt 51200 ]; then
-        printf '%-13s%s\n' "[unbounded]" "$n ring.log is ${kb}KB — rotate it or write less"
-        issues=$((issues + 1))
+        doctor_note unbounded "$n ring.log is ${kb}KB — rotate it or write less"
       fi
     fi
 
@@ -196,14 +241,12 @@ cmd_doctor() {
     local budget
     budget=$(conf_get "$d" MAX_RUNS_PER_DAY 0)
     if [ "$budget" = "0" ] && [ -n "$sched" ]; then
-      printf '%-13s%s\n' "[unbudgeted]" "$n has no MAX_RUNS_PER_DAY and a live schedule — one hang loop and it runs all day"
-      issues=$((issues + 1))
+      doctor_note unbudgeted "$n has no MAX_RUNS_PER_DAY and a live schedule — one hang loop and it runs all day"
     fi
 
     # No verifier at all means "it exited 0" is your only evidence.
     if [ -z "$(conf_get "$d" DELIVERABLE "")" ] && [ ! -x "$d/hooks/verify.sh" ]; then
-      printf '%-13s%s\n' "[unverified]" "$n declares no DELIVERABLE and has no hooks/verify.sh — nothing can tell you it worked"
-      issues=$((issues + 1))
+      doctor_note unverified "$n declares no DELIVERABLE and has no hooks/verify.sh — nothing can tell you it worked"
     fi
 
     # A lock older than any plausible run is a corpse holding the door shut.
@@ -212,15 +255,13 @@ cmd_doctor() {
       lage=$(( $(date +%s) - $(ring_mtime "$d/.lock") ))
       stale=$(conf_get "$d" LOCK_STALE 1800)
       if [ "$lage" -gt "$stale" ]; then
-        printf '%-13s%s\n' "[stuck]" "$n holds a lock ${lage}s old (stale after ${stale}s) — next run will reclaim it"
-        issues=$((issues + 1))
+        doctor_note stuck "$n holds a lock ${lage}s old (stale after ${stale}s) — next run will reclaim it"
       fi
     fi
 
     # A ring halted and forgotten is a ring you think is working.
     if [ -f "$d/.halt" ]; then
-      printf '%-13s%s\n' "[halted]" "$n is halted: $(head -c 120 "$d/.halt")"
-      issues=$((issues + 1))
+      doctor_note halted "$n is halted: $(head -c 120 "$d/.halt")"
     fi
   done
 
@@ -231,26 +272,107 @@ cmd_doctor() {
   while IFS="$(printf '\t')" read -r pr em carrier rel fmt ttl present age rows dec wir cons str st why; do
     [ -n "$pr" ] || continue
     [ "$st" = "flowing" ] && continue
-    printf '%-13s%s\n' "[$st]" "$pr.$em — $why"
-    issues=$((issues + 1))
+    doctor_note "$st" "$pr.$em — $why"
   done <<SCAN
 $scan
 SCAN
   dangling=$(contracts_dangling)
   while IFS="$(printf '\t')" read -r cn ref; do
     [ -n "$cn" ] || continue
-    printf '%-13s%s\n' "[dangling]" "$cn consumes $ref, which no ring emits"
-    issues=$((issues + 1))
+    doctor_note dangling "$cn consumes $ref, which no ring emits"
   done <<DANG
 $dangling
 DANG
 
-  echo
-  if [ "$issues" -eq 0 ]; then
-    echo "$total ring(s), nothing to report."
+  # Handoffs: the spool is checked across the fleet, like contracts.
+  local items dels t sink outcome cnt ready leased acc rej dead oldest gated
+  local ring_name ddir f state created ts age limit nd ids since m id ninv nrc
+  items=$(ho_scan_items)
+  dels=$(ho_scan_deliveries)
+  for t in $(ho_chain_types | cut -f1); do
+    IFS="$(printf '\t')" read -r t sink outcome cnt ready leased acc rej dead oldest gated <<SUM
+$(ho_type_summary "$t" "$items" "$dels")
+SUM
+    [ "$gated" = "0" ] && doctor_note ungated "$t has no types/$t/accept.sh — its items are accepted on the producer's word"
+    if [ -n "$(ho_producers_of "$t")" ] && [ -z "$(ho_subscribers_of "$t")" ]; then
+      doctor_note orphan "$t is emitted and no ring consumes it"
+    fi
+  done
+  for d in $(each_ring); do
+    ring_name=$(basename "$d")
+    for t in $(ho_ring_types "$d" CONSUMES) $(ho_ring_types "$d" EMITS); do
+      ho_type_declared "$t" || doctor_note dangling "$ring_name names $t, which no CHAIN_ line in rings.conf declares"
+    done
+    ddir="$(ho_spool)/deliveries/$ring_name"
+    [ -d "$ddir" ] || continue
+    nd=0; ids=""
+    limit=$(( $(doctor_interval_seconds "$d") * 3 ))
+    for f in "$ddir"/[0-9]*; do
+      [ -f "$f" ] || continue
+      state=$(ho_kv_get "$f" state)
+      if [ "$state" = "dead" ]; then nd=$((nd + 1)); ids="$ids $(basename "$f")"; fi
+      if [ "$state" = "ready" ]; then
+        created=$(ho_kv_get "$f" created)
+        age=$(( $(date +%s) - $(ho_iso_to_epoch "$created") ))
+        if [ "$age" -gt "$limit" ]; then
+          doctor_note backlog "$ring_name has had $(basename "$f") ready for $((age / 3600))h — more than three of its intervals"
+        fi
+      fi
+    done
+    [ "$nd" -gt 0 ] && doctor_note dead-letter "$ring_name dropped $nd item(s):$ids — rings retry <id> $ring_name"
+    if [ -d "$d/runs" ]; then
+      ninv=0; nrc=0
+      # shellcheck disable=SC2012
+      for f in $(ls -t "$d/runs"/*.receipt 2>/dev/null | head -20); do
+        nrc=$((nrc + 1))
+        ninv=$(( ninv + $(grep -c '^invalid=' "$f") ))
+      done
+      [ "$ninv" -gt 0 ] && doctor_note invalid "$ring_name: $ninv refused candidate(s) or decision(s) in its last $nrc receipt(s) — read $d/runs/"
+    fi
+  done
+  # undelivered: an item a subscriber should have a record for, and does not
+  while IFS="$(printf '\t')" read -r id t _ _ ts _ _ _ _; do
+    [ -n "$id" ] || continue
+    for ring_name in $(ho_subscribers_of "$t"); do
+      since="$(ho_spool)/deliveries/$ring_name/.since.$t"
+      [ -f "$since" ] || continue
+      [ "$ts" \< "$(cat "$since")" ] && continue
+      [ -f "$(ho_spool)/deliveries/$ring_name/$id" ] || doctor_note undelivered "$id ($t) has no delivery record at $ring_name — its next run reconciles it"
+    done
+  done <<ITEMS
+$items
+ITEMS
+
+  issues=$(grep -c . "$DOCTOR_FINDINGS" 2>/dev/null | tr -d ' ')
+  if [ "$json" -eq 1 ]; then
+    local first tag text
+    echo '{'
+    printf '  "generated": "%s",\n' "$(ho_now)"
+    printf '  "rings": %s,\n' "$total"
+    echo '  "findings": ['
+    first=1
+    while IFS="$(printf '\t')" read -r tag text; do
+      [ -n "$tag" ] || continue
+      [ "$first" -eq 1 ] || printf ',\n'
+      first=0
+      printf '    {"tag": %s, "text": %s}' "$(ho_json_str "$tag")" "$(ho_json_str "$text")"
+    done < "$DOCTOR_FINDINGS"
+    [ "$first" -eq 1 ] || printf '\n'
+    echo '  ]'
+    echo '}'
   else
-    echo "$total ring(s), $issues finding(s)."
+    while IFS="$(printf '\t')" read -r tag text; do
+      [ -n "$tag" ] || continue
+      printf '%-13s%s\n' "[$tag]" "$text"
+    done < "$DOCTOR_FINDINGS"
+    echo
+    if [ "$issues" -eq 0 ]; then
+      echo "$total ring(s), nothing to report."
+    else
+      echo "$total ring(s), $issues finding(s)."
+    fi
   fi
+  rm -f "$DOCTOR_FINDINGS"
 }
 
 # --- halt / resume -----------------------------------------------------------
@@ -554,49 +676,96 @@ DANG
 }
 
 cmd_goals() {
-  local apex sinks sink id label d n serves hit orphans oldifs
+  local apex sinks sink id label d n serves hit orphans oldifs json first_s first_t t ct outcome cnt prods p items on_chain
   apex=$(fleet_get APEX "")
   sinks=$(fleet_get SINKS "")
+  json=0; [ "${1:-}" = "--json" ] && json=1
 
   if [ -z "$apex" ] && [ -z "$sinks" ]; then
+    if [ "$json" -eq 1 ]; then echo '{"apex": null, "sinks": [], "unserved": []}'; return 0; fi
     echo "No $RINGS_HOME/rings.conf — nothing here states what the fleet is for."
     echo
     echo "Write one:"
     echo '  APEX="the one outcome every ring here is for"'
-    echo '  SINKS="revenue:Money in proof:Machine verified"'
+    echo '  SINKS="revenue:Money in, proof:Machine verified"'
+    echo '  CHAIN_revenue="tender.discovered@1 bid.submitted@1 contract.signed@1"'
     echo
-    echo 'Then put SERVES="revenue" in each ring.conf. A ring that serves nothing'
-    echo "is a ring you are paying for and cannot justify."
+    echo 'Then put SERVES="revenue" in each ring.conf, or have it EMIT or CONSUME a type on'
+    echo "a chain. A ring that serves nothing is a ring you are paying for and cannot justify."
     return 0
   fi
 
-  echo "apex: ${apex:-(unstated)}"
-  echo
-  orphans=""
+  items=$(ho_scan_items)
+  # rings on a chain: any ring whose EMITS or CONSUMES names a declared type
+  on_chain=""
+  for d in $(each_ring); do
+    for t in $(ho_ring_types "$d" EMITS) $(ho_ring_types "$d" CONSUMES); do
+      if ho_type_declared "$t"; then on_chain="$on_chain $(basename "$d")"; break; fi
+    done
+  done
+
+  [ "$json" -eq 1 ] && { echo '{'; printf '  "apex": %s,\n' "$(ho_json_or_null "$apex")"; echo '  "sinks": ['; }
+  [ "$json" -eq 0 ] && { echo "apex: ${apex:-(unstated)}"; echo; }
+  first_s=1
   oldifs="$IFS"
   IFS=","
   for sink in $sinks; do
     IFS="$oldifs"
     sink=$(printf '%s' "$sink" | sed -e 's/^ *//' -e 's/ *$//')
-    [ -n "$sink" ] || continue
+    [ -n "$sink" ] || { IFS=","; continue; }
     id=${sink%%:*}
     label=${sink#*:}
     [ "$label" = "$id" ] && label=""
-    printf '  %s%s\n' "$id" "${label:+  — $label}"
+    if [ "$json" -eq 1 ]; then
+      [ "$first_s" -eq 1 ] || printf ',\n'
+      first_s=0
+      printf '    {"id": %s, "label": %s, "chain": [' "$(ho_json_str "$id")" "$(ho_json_or_null "$label")"
+    else
+      printf '  %s%s\n' "$id" "${label:+  — $label}"
+    fi
+    first_t=1
+    while IFS="$(printf '\t')" read -r t ct outcome; do
+      [ -n "$t" ] && [ "$ct" = "$id" ] || continue
+      cnt=$(printf '%s\n' "$items" | awk -F'\t' -v t="$t" '$2 == t' | grep -c .)
+      prods=$(ho_producers_of "$t" | tr '\n' ' ' | sed 's/ $//')
+      if [ "$json" -eq 1 ]; then
+        [ "$first_t" -eq 1 ] || printf ', '
+        first_t=0
+        local pj=""; for p in $prods; do pj="$pj${pj:+, }$(ho_json_str "$p")"; done
+        printf '{"type": %s, "items": %s, "outcome": %s, "producers": [%s]}' "$(ho_json_str "$t")" "$cnt" "$(json_bool "$outcome")" "$pj"
+      else
+        printf '      %-26s %4s   %s%s\n' "$t" "$cnt" "${prods:-(no producer)}" "$([ "$outcome" = "1" ] && printf '   (outcome)')"
+      fi
+    done <<CHAIN
+$(ho_chain_types)
+CHAIN
+    [ "$json" -eq 1 ] && printf '], "rings": ['
     hit=0
+    first_t=1
     for d in $(each_ring); do
       n=$(basename "$d")
       serves=$(conf_get "$d" SERVES "")
       [ "$serves" = "$id" ] || continue
       hit=1
-      printf '      %-16s %s\n' "$n" "$(conf_get "$d" EMITS '(emits nothing)')"
+      if [ "$json" -eq 1 ]; then
+        [ "$first_t" -eq 1 ] || printf ', '
+        first_t=0
+        ho_json_str "$n"
+      else
+        printf '      %-16s %s\n' "$n" "$(conf_get "$d" EMITS '(emits nothing)')"
+      fi
     done
-    [ "$hit" -eq 0 ] && echo "      (nothing feeds this)"
-    echo
+    if [ "$json" -eq 1 ]; then
+      printf ']}'
+    else
+      [ "$hit" -eq 0 ] && [ -z "$(fleet_get "CHAIN_$id" "")" ] && echo "      (nothing feeds this)"
+      echo
+    fi
     IFS=","
   done
   IFS="$oldifs"
 
+  orphans=""
   for d in $(each_ring); do
     n=$(basename "$d")
     serves=$(conf_get "$d" SERVES "")
@@ -606,11 +775,26 @@ cmd_goals() {
       [ "${sink%%:*}" = "$serves" ] && hit=1
     done
     IFS="$oldifs"
+    case " $on_chain " in *" $n "*) hit=1 ;; esac
     [ "$hit" -eq 0 ] && orphans="$orphans $n"
   done
+  if [ "$json" -eq 1 ]; then
+    [ "$first_s" -eq 1 ] || printf '\n'
+    echo '  ],'
+    printf '  "unserved": ['
+    first_t=1
+    for n in $orphans; do
+      [ "$first_t" -eq 1 ] || printf ', '
+      first_t=0
+      ho_json_str "$n"
+    done
+    echo ']'
+    echo '}'
+    return 0
+  fi
   if [ -n "$orphans" ]; then
     echo "  serving no stated outcome:$orphans"
-    echo "      Give each a SERVES that names a sink above, or stop paying for it."
+    echo "      Give each a SERVES that names a sink above, put it on a chain, or stop paying for it."
   fi
 }
 
