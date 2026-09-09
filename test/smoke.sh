@@ -299,6 +299,53 @@ case "$OUT" in ok\ *) ok "the gate lets a good candidate through" ;; *) bad "the
 OUT=$(RINGS_HOME="$HO" "$RINGS" emit bidder bid.submitted@1 key=B-2 cause=not-an-item --file "$TMP/bid.json")
 case "$OUT" in refused*cause*) ok "a cause that is not a published item is refused" ;; *) bad "a cause that is not a published item is refused ($OUT)" ;; esac
 
+# 16. handoffs — deliveries
+printf 'CONSUMES="tender.discovered@1"\nEMITS="bid.submitted@1"\nMAX_ATTEMPTS=2\nTIMEOUT=10\n' > "$HO/bidder/ring.conf"
+IN="$TMP/in"; rm -rf "$IN"; mkdir -p "$IN"
+LEASED=$(holib "ho_reconcile bidder \$(date +%s); ho_lease bidder run-1 10 10 '$IN'")
+check "$(printf '%s\n' "$LEASED" | cut -f1)" "$TID" "lease hands out the ready item"
+check "$(printf '%s\n' "$LEASED" | cut -f4)" "1" "first lease is attempt 1"
+check "$(printf '%s\n' "$LEASED" | cut -f5)" "2" "and reports MAX_ATTEMPTS"
+assert "the payload was copied into in/" cmp -s "$TMP/tender.json" "$IN/$TID.json"
+check "$(holib "ho_kv_get '$HO/spool/deliveries/bidder/$TID' state")" "leased" "the record is leased"
+check "$(holib "ho_kv_get '$HO/spool/deliveries/bidder/$TID' leased_by")" "run-1" "to this run"
+check "$(holib "ho_lease bidder run-1b 10 10 '$IN'" | wc -l | tr -d ' ')" "0" "a leased item is not handed out twice"
+
+check "$(holib "ho_decide bidder run-2 accept $TID 'x'")" "invalid $TID was not leased to this run" "a decision from the wrong run is invalid"
+check "$(holib "ho_decide bidder run-1 accept $TID 'submitted, ref PRT-1'")" "ok" "the leasing run may decide"
+check "$(holib "ho_kv_get '$HO/spool/deliveries/bidder/$TID' state")" "accepted" "accept is terminal"
+check "$(holib "ho_kv_get '$HO/spool/deliveries/bidder/$TID' note")" "submitted, ref PRT-1" "the note is kept"
+
+printf '{"title": "second"}\n' > "$TMP/t2.json"
+T2=$(RINGS_HOME="$HO" "$RINGS" emit scout tender.discovered@1 key=T-2 --file "$TMP/t2.json"); T2=${T2#ok }
+holib "ho_lease bidder run-3 10 10 '$IN' > /dev/null; ho_release_run bidder run-3"
+check "$(holib "ho_kv_get '$HO/spool/deliveries/bidder/$T2' state")" "ready" "silence returns the item to ready"
+check "$(holib "ho_kv_get '$HO/spool/deliveries/bidder/$T2' attempts")" "1" "and counts an attempt"
+check "$(holib "ho_lease bidder run-4 10 10 '$IN'" | cut -f4)" "2" "the next lease is attempt 2"
+holib "ho_release_run bidder run-4"
+check "$(holib "ho_kv_get '$HO/spool/deliveries/bidder/$T2' state")" "dead" "MAX_ATTEMPTS silent leases dead-letter the item"
+check "$(holib "ho_lease bidder run-5 10 10 '$IN'" | wc -l | tr -d ' ')" "0" "a dead item is not handed out"
+RINGS_HOME="$HO" "$RINGS" retry "$T2" bidder > /dev/null
+check "$(holib "ho_kv_get '$HO/spool/deliveries/bidder/$T2' state")" "ready" "retry revives a dead item"
+check "$(holib "ho_kv_get '$HO/spool/deliveries/bidder/$T2' attempts")" "0" "with attempts reset"
+
+# a lease whose run died is reclaimed once it expires
+holib "ho_lease bidder run-6 10 10 '$IN' > /dev/null; ho_kv_set '$HO/spool/deliveries/bidder/$T2' lease_until_epoch 1"
+holib "ho_reconcile bidder \$(date +%s)"
+check "$(holib "ho_kv_get '$HO/spool/deliveries/bidder/$T2' state")" "ready" "an expired lease is reclaimed"
+check "$(holib "ho_kv_get '$HO/spool/deliveries/bidder/$T2' attempts")" "1" "and counted"
+
+# a missing delivery record is created by reconciliation; a new subscriber sees only new items
+rm -f "$HO/spool/deliveries/bidder/$T2"
+holib "ho_reconcile bidder \$(date +%s)"
+assert "reconcile recreates a missing delivery" test -f "$HO/spool/deliveries/bidder/$T2"
+mkdir -p "$HO/late"; printf 'CONSUMES="tender.discovered@1"\n' > "$HO/late/ring.conf"
+holib "ho_reconcile late \$(date +%s)"
+assert "a new subscriber writes its since marker" test -f "$HO/spool/deliveries/late/.since.tender.discovered@1"
+check "$(find "$HO/spool/deliveries/late" -mindepth 1 -maxdepth 1 ! -name '.*' | wc -l | tr -d ' ')" "0" "and gets no items older than the marker"
+RINGS_HOME="$HO" "$RINGS" retry "$TID" late > /dev/null
+check "$(holib "ho_kv_get '$HO/spool/deliveries/late/$TID' state")" "ready" "retry hands an old item to a new subscriber on purpose"
+
 # 13. everything parses under bash 3.2, which is what launchd runs
 for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh; do
   [ -f "$f" ] || continue

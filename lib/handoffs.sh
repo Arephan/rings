@@ -205,3 +205,139 @@ ho_publish() {
   done
   echo "ok $id"
 }
+
+# --- deliveries --------------------------------------------------------------
+
+# ho_reconcile <ring> <now epoch>
+# 1. every item of a type this ring consumes, published since the ring started
+#    consuming it, has a delivery record;
+# 2. every lease that outlived its lease_until goes back to ready (or dead).
+ho_reconcile() {
+  local ring="$1" now="$2" spool ddir t since m id ts f until max
+  spool=$(ho_spool)
+  ddir="$spool/deliveries/$ring"
+  mkdir -p "$ddir"
+  for t in $(ho_ring_types "$RINGS_HOME/$ring" CONSUMES); do
+    since="$ddir/.since.$t"
+    [ -f "$since" ] || ho_now > "$since"
+    for m in "$spool"/items/*/manifest; do
+      [ -f "$m" ] || continue
+      [ "$(ho_kv_get "$m" type)" = "$t" ] || continue
+      ts=$(ho_kv_get "$m" ts)
+      # RFC3339 UTC strings sort as time; a string compare is exact here.
+      [ "$ts" \< "$(cat "$since")" ] && continue
+      id=$(ho_kv_get "$m" id)
+      ho_deliver "$id" "$ring"
+    done
+  done
+  max=$(conf_get "$RINGS_HOME/$ring" MAX_ATTEMPTS 3)
+  for f in "$ddir"/[0-9]*; do
+    [ -f "$f" ] || continue
+    [ "$(ho_kv_get "$f" state)" = "leased" ] || continue
+    until=$(ho_kv_get "$f" lease_until_epoch)
+    case "$until" in '' | *[!0-9]*) until=0 ;; esac
+    [ "$until" -lt "$now" ] || continue
+    ho_release_one "$f" "$max" "lease expired"
+  done
+}
+
+# ho_lease <ring> <run> <max items> <timeout s> <in dir>
+# Oldest ready records first (ids sort by time). Prints TSV: id, type, from,
+# attempt (1-based), max. A payload whose checksum disagrees with its manifest
+# is skipped, not leased; rings trace reports it.
+ho_lease() {
+  local ring="$1" run="$2" maxn="$3" timeout_s="$4" indir="$5"
+  local spool ddir f n id m max untile attempts
+  spool=$(ho_spool)
+  ddir="$spool/deliveries/$ring"
+  n=0
+  max=$(conf_get "$RINGS_HOME/$ring" MAX_ATTEMPTS 3)
+  untile=$(( $(date +%s) + timeout_s + 300 ))
+  for f in "$ddir"/[0-9]*; do
+    [ -f "$f" ] || continue
+    [ "$n" -lt "$maxn" ] || break
+    [ "$(ho_kv_get "$f" state)" = "ready" ] || continue
+    id=$(basename "$f")
+    m="$spool/items/$id/manifest"
+    [ -f "$m" ] || continue
+    [ "$(ho_sha256 "$spool/items/$id/payload")" = "$(ho_kv_get "$m" sha256)" ] || continue
+    ho_kv_set "$f" state leased
+    ho_kv_set "$f" leased_by "$run"
+    ho_kv_set "$f" lease_until_epoch "$untile"
+    ho_kv_set "$f" lease_until "$(ho_epoch_to_iso "$untile")"
+    cp "$spool/items/$id/payload" "$indir/$id.json"
+    attempts=$(ho_kv_get "$f" attempts)
+    printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$(ho_kv_get "$m" type)" "$(ho_kv_get "$m" from)" "$((attempts + 1))" "$max"
+    n=$((n + 1))
+  done
+}
+
+# ho_decide <ring> <run> <accept|reject> <id> <note> — prints "ok" or "invalid <why>".
+ho_decide() {
+  local ring="$1" run="$2" verb="$3" id="$4" note="$5" f
+  f="$(ho_spool)/deliveries/$ring/$id"
+  [ -f "$f" ] || { echo "invalid $id is not a delivery for $ring"; return 0; }
+  if [ "$(ho_kv_get "$f" state)" != "leased" ] || [ "$(ho_kv_get "$f" leased_by)" != "$run" ]; then
+    echo "invalid $id was not leased to this run"; return 0
+  fi
+  case "$verb" in
+    accept) ho_kv_set "$f" state accepted ;;
+    reject) ho_kv_set "$f" state rejected ;;
+    *) echo "invalid decision $verb"; return 0 ;;
+  esac
+  ho_kv_set "$f" ended "$(ho_now)"
+  ho_kv_set "$f" note "$note"
+  ho_kv_set "$f" decided_by "$run"
+  echo ok
+}
+
+# ho_release_one <record> <max> <why> — a lease that ended without a decision.
+ho_release_one() {
+  local f="$1" max="$2" a
+  a=$(ho_kv_get "$f" attempts)
+  case "$a" in '' | *[!0-9]*) a=0 ;; esac
+  a=$((a + 1))
+  ho_kv_set "$f" attempts "$a"
+  ho_kv_set "$f" leased_by ""
+  ho_kv_set "$f" lease_until ""
+  ho_kv_set "$f" lease_until_epoch ""
+  if [ "$a" -ge "$max" ]; then
+    ho_kv_set "$f" state dead
+    ho_kv_set "$f" ended "$(ho_now)"
+    ho_kv_set "$f" note "$3; dead after $a attempts"
+  else
+    ho_kv_set "$f" state ready
+  fi
+}
+
+# ho_release_run <ring> <run> — everything still leased to this run.
+ho_release_run() {
+  local ring="$1" run="$2" f max
+  max=$(conf_get "$RINGS_HOME/$ring" MAX_ATTEMPTS 3)
+  for f in "$(ho_spool)/deliveries/$ring"/[0-9]*; do
+    [ -f "$f" ] || continue
+    [ "$(ho_kv_get "$f" state)" = "leased" ] || continue
+    [ "$(ho_kv_get "$f" leased_by)" = "$run" ] || continue
+    ho_release_one "$f" "$max" "no decision"
+  done
+}
+
+# ho_retry <id> <ring> — dead → ready, attempts reset; or a fresh record.
+ho_retry() {
+  local f
+  f="$(ho_spool)/deliveries/$2/$1"
+  [ -f "$(ho_spool)/items/$1/manifest" ] || { echo "no item $1"; return 1; }
+  if [ -f "$f" ]; then
+    ho_kv_set "$f" state ready
+    ho_kv_set "$f" attempts 0
+    ho_kv_set "$f" leased_by ""
+    ho_kv_set "$f" lease_until ""
+    ho_kv_set "$f" lease_until_epoch ""
+    ho_kv_set "$f" ended ""
+    ho_kv_set "$f" note "retried $(ho_now)"
+  else
+    ho_deliver "$1" "$2"
+    ho_kv_set "$f" note "handed to $2 by rings retry $(ho_now)"
+  fi
+  echo "ready $1 for $2"
+}

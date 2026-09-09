@@ -33,6 +33,7 @@ rings — one ring is one agent loop: trigger, goal, verifier, stop, memory.
   rings goals                 every ring under the outcome it serves
   rings emit <ring> <type> key=<k> [cause=<id>] [ref=<r>] --file <payload>
                               publish a work item from a script or by hand
+  rings retry <id> [<ring>]   dead → ready with attempts reset; or hand an item to a ring
   rings version
 
 Rings live in $RINGS_HOME (override with RINGS_HOME). A ring is a directory
@@ -631,6 +632,21 @@ cmd_emit() {
   ho_publish "$ring" "cli-$(ho_run_id)" "$type" "$key" "$cause" "$ref" "$file"
 }
 
+cmd_retry() {
+  # rings retry <id> [<ring>] — with no ring, every consumer that has the item dead.
+  local id="${1:-}" ring="${2:-}" f
+  [ -n "$id" ] || die "usage: rings retry <id> [<ring>]"
+  if [ -n "$ring" ]; then
+    ho_retry "$id" "$ring"
+    return
+  fi
+  for f in "$(ho_spool)"/deliveries/*/"$id"; do
+    [ -f "$f" ] || continue
+    [ "$(ho_kv_get "$f" state)" = "dead" ] || continue
+    ho_retry "$id" "$(basename "$(dirname "$f")")"
+  done
+}
+
 # --- main --------------------------------------------------------------------
 
 mkdir -p "$RINGS_HOME"
@@ -651,6 +667,7 @@ case "$cmd" in
   contracts)  cmd_contracts "$@" ;;
   goals)      cmd_goals "$@" ;;
   emit)       cmd_emit "$@" ;;
+  retry)      cmd_retry "$@" ;;
   version|-v|--version) echo "rings $RINGS_VERSION" ;;
   help|-h|--help) usage ;;
   *)          usage; exit 1 ;;
