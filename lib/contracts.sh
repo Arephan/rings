@@ -19,7 +19,7 @@ contract_emits() {
     rel=$(contract_field "$spec" 2)
     fmt=$(contract_field "$spec" 3)
     ttl=$(contract_field "$spec" 4)
-    [ -n "$name" ] && [ -n "$rel" ] || continue
+    if [ -z "$name" ] || [ -z "$rel" ]; then continue; fi
     if [ -z "$fmt" ]; then
       case "$rel" in
         *.jsonl) fmt="jsonl" ;;

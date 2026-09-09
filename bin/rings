@@ -490,6 +490,9 @@ fleet_get() {
   printf '%s' "$v"
 }
 
+json_bool() { if [ "$1" = "1" ]; then echo true; else echo false; fi; }
+json_num()  { if [ "$1" = "-" ]; then echo null; else echo "$1"; fi; }
+
 cmd_contracts() {
   local scan dangling total broken first dang
   scan=$(contracts_scan)
@@ -510,8 +513,7 @@ cmd_contracts() {
       printf '    {"id": "%s.%s", "from": "%s", "carrier": "%s", "format": "%s", "ttlHours": %s, ' \
         "$pr" "$em" "$pr" "$rel" "$fmt" "$ttl"
       printf '"present": %s, "ageSeconds": %s, "rows": %s, "declared": %s, "wired": %s, ' \
-        "$([ "$present" = 1 ] && echo true || echo false)" "$age" \
-        "$([ "$rows" = "-" ] && echo null || echo "$rows")" "$dec" "$wir"
+        "$(json_bool "$present")" "$age" "$(json_num "$rows")" "$dec" "$wir"
       printf '"consumers": "%s", "stranded": %s, "status": "%s", "why": "%s"}' \
         "$cons" "$str" "$st" "$(ring_json_escape "$why")"
     done <<SCAN
