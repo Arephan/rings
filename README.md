@@ -41,7 +41,8 @@ rings board     # watch it at http://127.0.0.1:7781 (needs node 18+)
 `rings demo` copies three rings — scout, bidder, closer — into `~/.rings`, runs
 each once, and prints the funnel and the feed. Nothing calls a model; the agents
 are shell scripts. `rings board` shows the same data as a page and re-reads it
-every five seconds. Then:
+every five seconds. Add that `export` line to your shell's rc file to keep
+`rings` on your PATH. Then:
 
 ```bash
 rings new nightly-digest                     # your first real ring
@@ -259,6 +260,8 @@ rings inbox <ring>          what has been handed to a ring, and its state
 rings handoffs [--json]     per type: items, ready, leased, accepted, rejected, dead
 rings trace <id> [--json]   one item's whole life, source to outcome
 rings feed [n] [--json]     the newest n events across the fleet (default 50)
+rings board [port]          serve the read-only board on localhost (default 7781)
+rings demo                  three rings, one fact, one outcome — in an empty RINGS_HOME
 rings version
 ```
 

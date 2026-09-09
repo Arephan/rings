@@ -1043,8 +1043,10 @@ cmd_board() {
 cmd_demo() {
   # rings demo — copy the three-ring demo into an empty $RINGS_HOME and run it once.
   local r
-  if [ -n "$(each_ring)" ]; then
-    die "$RINGS_HOME already has rings. Try the demo somewhere empty: RINGS_HOME=/tmp/rings-demo rings demo"
+  # The demo never writes over anything: an empty (or absent) RINGS_HOME only.
+  # shellcheck disable=SC2012
+  if [ -d "$RINGS_HOME" ] && [ -n "$(ls -A "$RINGS_HOME" 2>/dev/null)" ]; then
+    die "$RINGS_HOME is not empty. Try the demo somewhere empty: RINGS_HOME=\$(mktemp -d) rings demo"
   fi
   cp -R "$SELF/examples/handoff-demo/." "$RINGS_HOME/" || die "could not copy the demo into $RINGS_HOME"
   chmod +x "$RINGS_HOME"/*/agent.sh "$RINGS_HOME"/types/*/accept.sh 2>/dev/null

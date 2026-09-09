@@ -630,8 +630,12 @@ greps "demo prints the funnel" 'deal.signed@1 *1' "$TMP/demo.out"
 greps "demo prints the feed" 'published prospect.qualified@1' "$TMP/demo.out"
 greps "demo tells you what to do next" 'rings trace' "$TMP/demo.out"
 RINGS_HOME="$H6" "$RINGS" demo > "$TMP/demo2.out" 2>&1
-check "$?" "1" "demo refuses to overwrite a RINGS_HOME that already has rings"
+check "$?" "1" "demo refuses a RINGS_HOME that already has rings"
 greps "and says how to try it elsewhere" 'RINGS_HOME=' "$TMP/demo2.out"
+H6B="$TMP/h6b"; mkdir -p "$H6B"; printf 'APEX="mine"\nSINKS="revenue:Money in"\n' > "$H6B/rings.conf"
+RINGS_HOME="$H6B" "$RINGS" demo > "$TMP/demo3.out" 2>&1
+check "$?" "1" "demo refuses a RINGS_HOME that holds only a hand-written rings.conf"
+check "$(grep -c 'APEX="mine"' "$H6B/rings.conf")" "1" "and leaves that rings.conf untouched"
 
 # 13. everything parses under bash 3.2, which is what launchd runs
 for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh "$ROOT"/examples/*/types/*/accept.sh; do
