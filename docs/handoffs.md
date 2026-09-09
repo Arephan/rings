@@ -375,8 +375,14 @@ rings trace <id>              one item's whole life: producer run, every deliver
 rings handoffs [--json]       per type: items, ready, leased, accepted, rejected, dead
 rings retry <id> [<ring>]     dead → ready with attempts reset; creates the
                               delivery if the ring never had one
-rings goals                   now also prints the funnel per sink, from cause links
+rings feed [n] [--json]       the newest n events across the fleet: items published,
+                              decisions, dead letters, run verdicts; default 50
+rings goals [--json]          now also prints the funnel per sink, from cause links
+rings board [port]            serve the read-only board on localhost (default 7781)
 ```
+
+`list`, `doctor`, `goals`, `handoffs`, `trace` and `feed` all take `--json`.
+That output is the only interface the board, or anything else, builds on.
 
 `rings goals` with a chain declared:
 
@@ -409,6 +415,61 @@ Added to `rings doctor`, next to the existing findings:
 | `[ungated]` | a declared type has no `accept.sh` |
 | `[orphan]` | a type is emitted and no ring consumes it (same finding as v0.2) |
 | `[dangling]` | a ring consumes a type no chain declares |
+
+## Board
+
+`rings board` serves a read-only page for watching the fleet. It exists because
+`rings doctor` is what you run when something is wrong, and a board is what you
+look at to notice that something is.
+
+**The spool is the database.** The runner writes it. The board reads it. There is
+no third store, no export step, no registry of rings or types anywhere in the
+board's code. The board never learns a ring's name; it renders whatever the spool
+and the ring directories contain, so a new ring, type or chain appears on the
+next poll without anyone touching the front end. Any board that needs a manual
+step to reflect the fleet has failed this section.
+
+**The CLI is the query layer.** Each view is one endpoint, and each endpoint
+shells out to one command's `--json` output and returns it unchanged:
+
+| endpoint | command | view |
+|---|---|---|
+| `/api/fleet` | `rings list --json` | every ring: state, schedule, last verdict, next fire, runs today |
+| `/api/goals` | `rings goals --json` | the funnel per sink |
+| `/api/handoffs` | `rings handoffs --json` | per type: ready, leased, accepted, rejected, dead, oldest ready |
+| `/api/feed` | `rings feed --json` | newest events across the fleet |
+| `/api/doctor` | `rings doctor --json` | findings |
+| `/api/trace/<id>` | `rings trace <id> --json` | one item, source to outcome |
+
+The board computes nothing. If a number on the page and a number in the terminal
+ever differ, that is a bug in the board and nowhere else. Every request re-runs
+the command; nothing is cached and nothing is written. The page polls every five
+seconds.
+
+**Where it lives.** `board/` in this repository:
+
+```
+board/
+├── server.mjs      node 18+, built-in http only, no dependencies; ~100 lines
+├── ui/             the page: React, Vite, Tailwind, shadcn/ui
+└── dist/           the built page, committed, so `rings board` runs from a clone
+```
+
+The server has one job: serve `dist/` and the six endpoints above. Rebuilding the
+page is `npm install && npm run build` inside `board/ui`, and is only needed when
+the page itself changes.
+
+**Components.** The page is built from shadcn/ui components and nothing else:
+`Table` for fleet and handoffs, `Card` and `Badge` for the funnel and counts,
+`Tabs` for the views, `Sheet` for a trace, `Tooltip` for reasons and notes,
+`ScrollArea` for the feed, `Skeleton` while loading, `Empty` for a fleet with no
+rings or a type with no items. No hand-written component may duplicate one the
+library ships. Layout is Tailwind utilities on those primitives. A fleet-specific
+widget is a design failure, because the board must render a fleet it has never
+seen.
+
+**Requirements.** node 18 or newer, for the board only. Core `rings` stays bash.
+A machine without node has the same data in the terminal via the `--json` flags.
 
 ## Failure and repair
 
@@ -481,9 +542,19 @@ network, under bash 5 and `/bin/bash` 3.2:
   `rings goals` shows 1 / 1 / 1
 - `rings emit` from a plain script produces an item indistinguishable from one
   emitted by a ring run
+- every `--json` output parses, and `rings feed --json` lists the events of the
+  three-ring chain in time order
+
+The board has its own checks, run when node is present and skipped otherwise:
+
+- each endpoint returns byte-identical output to its command
+- an empty `$RINGS_HOME` renders the empty state on every view, with no error
+- the demo fleet renders a fleet the page has never been told about
+- `npm run build` typechecks clean, and the committed `dist/` matches a fresh build
 
 `examples/handoff-demo` ships those three rings with fake agents, so a fresh
-clone can watch one fact travel to an outcome without spending anything.
+clone can watch one fact travel to an outcome without spending anything, in the
+terminal or on the board.
 
 ## Left out of v1 on purpose
 
@@ -502,7 +573,8 @@ outcome impossible to counterfeit, which is what v1 has to prove.
 - the human as a ring with an inbox; a later version, once the mechanics have
   carried real work
 - waking a ring early because work is waiting; rings run on their schedule
-- any dashboard; `rings handoffs --json` and `rings trace` are the interface
+- anything on the board beyond reading: no buttons that retry, halt or edit;
+  those stay in the terminal until the read-only board has earned trust
 
 ## Relationship to contracts
 
