@@ -424,6 +424,38 @@ greps "an emit with a space in its key is invalid, not truncated" 'invalid=emit 
 greps "the ledger counts match" '"handoffs": {"in": 1, "accepted": 1, "rejected": 0, "emitted": 1, "invalid": 3}' "$H2/bidder/ledger.jsonl"
 assert "in/ still holds this run's payload for inspection" test -f "$H2/bidder/in/$T100.json"
 
+# 18. handoffs — reading the spool
+RINGS_HOME="$H2" "$RINGS" inbox bidder > "$TMP/inbox.out" 2>&1
+greps "inbox lists the ring's deliveries" "$T100.*accepted" "$TMP/inbox.out"
+RINGS_HOME="$H2" "$RINGS" handoffs > "$TMP/ho.out" 2>&1
+greps "handoffs prints each chain type" 'tender.discovered@1' "$TMP/ho.out"
+greps "with counts per state" 'bid.submitted@1 *revenue *1 ' "$TMP/ho.out"
+RINGS_HOME="$H2" "$RINGS" handoffs --json > "$TMP/ho.json" 2>&1
+if command -v python3 > /dev/null 2>&1; then
+  assert "handoffs --json parses" python3 -c "import json; j=json.load(open('$TMP/ho.json')); assert j['types'][0]['type']=='tender.discovered@1'; assert j['types'][0]['accepted']==1"
+fi
+RINGS_HOME="$H2" "$RINGS" trace "$BID" > "$TMP/trace.out" 2>&1
+greps "trace shows the item" "$BID" "$TMP/trace.out"
+greps "trace walks back to the cause" "$T100" "$TMP/trace.out"
+greps "trace shows the producer receipt" 'receipt:' "$TMP/trace.out"
+RINGS_HOME="$H2" "$RINGS" trace "$T100" --json > "$TMP/trace.json" 2>&1
+if command -v python3 > /dev/null 2>&1; then
+  assert "trace --json parses and lists the bid as an effect" python3 -c "import json; j=json.load(open('$TMP/trace.json')); assert j['effects'][0]['item']['id']=='$BID'; assert j['deliveries'][0]['state']=='accepted'"
+fi
+RINGS_HOME="$H2" "$RINGS" feed > "$TMP/feed.out" 2>&1
+greps "feed shows the publish" "published tender.discovered@1" "$TMP/feed.out"
+greps "feed shows the accept with its note" "accepted.*PRT-9" "$TMP/feed.out"
+greps "feed shows run verdicts" "run pass" "$TMP/feed.out"
+check "$(grep -c 'key=T-100 cause=' "$TMP/feed.out")" "0" "an empty cause column does not swallow the ref"
+check "$(RINGS_HOME="$H2" "$RINGS" feed 2 | grep -c .)" "2" "feed honours n"
+RINGS_HOME="$H2" "$RINGS" feed --json > "$TMP/feed.json" 2>&1
+if command -v python3 > /dev/null 2>&1; then
+  assert "feed --json parses, newest first" python3 -c "import json; j=json.load(open('$TMP/feed.json')); e=j['events']; assert e and all(e[i]['ts']>=e[i+1]['ts'] for i in range(len(e)-1))"
+fi
+check "$(RINGS_HOME="$CLEAN" "$RINGS" feed | grep -c .)" "0" "an empty fleet has an empty feed"
+RINGS_HOME="$CLEAN" "$RINGS" handoffs --json > "$TMP/ho-empty.json" 2>&1
+greps "an empty fleet still prints a types array" '"types": \[\]' "$TMP/ho-empty.json"
+
 # 13. everything parses under bash 3.2, which is what launchd runs
 for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh; do
   [ -f "$f" ] || continue

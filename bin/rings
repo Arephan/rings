@@ -32,6 +32,10 @@ rings — one ring is one agent loop: trigger, goal, verifier, stop, memory.
   rings emit <ring> <type> key=<k> [cause=<id>] [ref=<r>] --file <payload>
                               publish a work item from a script or by hand
   rings retry <id> [<ring>]   dead → ready with attempts reset; or hand an item to a ring
+  rings inbox <ring>          what has been handed to a ring, and its state
+  rings handoffs [--json]     per type: items, ready, leased, accepted, rejected, dead
+  rings trace <id> [--json]   one item's whole life, source to outcome
+  rings feed [n] [--json]     the newest n events across the fleet (default 50)
   rings version
 
 Rings live in $RINGS_HOME (override with RINGS_HOME). A ring is a directory
@@ -647,6 +651,178 @@ cmd_retry() {
   done
 }
 
+cmd_inbox() {
+  local ring="${1:-}" dels now created age
+  [ -n "$ring" ] || die "usage: rings inbox <ring>"
+  ring_dir_for "$ring" > /dev/null || die "no ring named $ring"
+  dels=$(ho_scan_deliveries | awk -F'\t' -v r="$ring" '$1 == r')
+  if [ -z "$dels" ]; then echo "nothing has been handed to $ring"; return 0; fi
+  now=$(date +%s)
+  printf '%-30s %-24s %-10s %-9s %-8s %s\n' ID TYPE FROM STATE ATTEMPTS AGE
+  while IFS="$(printf '\t')" read -r _ id type from state att created _ _; do
+    [ -n "$id" ] || continue
+    age=$(( (now - $(ho_iso_to_epoch "$created")) / 60 ))
+    printf '%-30s %-24s %-10s %-9s %-8s %sm\n' "$id" "$type" "$from" "$state" "$att" "$age"
+  done <<DELS
+$dels
+DELS
+}
+
+cmd_handoffs() {
+  local items dels t sink outcome n ready leased acc rej dead oldest gated first subs prods s
+  items=$(ho_scan_items)
+  dels=$(ho_scan_deliveries)
+  if [ "${1:-}" = "--json" ]; then
+    if [ -z "$(ho_chain_types)" ]; then
+      printf '{\n  "generated": "%s",\n  "types": []\n}\n' "$(ho_now)"
+      return 0
+    fi
+    echo '{'
+    printf '  "generated": "%s",\n' "$(ho_now)"
+    echo '  "types": ['
+    first=1
+    for t in $(ho_chain_types | cut -f1); do
+      [ "$first" -eq 1 ] || printf ',\n'
+      first=0
+      IFS="$(printf '\t')" read -r t sink outcome n ready leased acc rej dead oldest gated <<SUM
+$(ho_type_summary "$t" "$items" "$dels")
+SUM
+      subs=""; for s in $(ho_subscribers_of "$t"); do subs="$subs${subs:+, }$(ho_json_str "$s")"; done
+      prods=""; for s in $(ho_producers_of "$t"); do prods="$prods${prods:+, }$(ho_json_str "$s")"; done
+      printf '    {"type": %s, "sink": %s, "outcome": %s, "items": %s, "ready": %s, "leased": %s, "accepted": %s, "rejected": %s, "dead": %s, "oldestReadySeconds": %s, "gated": %s, "subscribers": [%s], "producers": [%s]}' \
+        "$(ho_json_str "$t")" "$(ho_json_str "$sink")" "$(json_bool "$outcome")" "$n" "$ready" "$leased" "$acc" "$rej" "$dead" "${oldest:-null}" "$(json_bool "$gated")" "$subs" "$prods"
+    done
+    [ "$first" -eq 1 ] || printf '\n'
+    echo '  ]'
+    echo '}'
+    return 0
+  fi
+  if [ -z "$(ho_chain_types)" ]; then
+    echo "No CHAIN_<sink> in $RINGS_HOME/rings.conf — no handoff types are declared."
+    echo 'Declare one:  CHAIN_revenue="tender.discovered@1 bid.submitted@1 contract.signed@1"'
+    return 0
+  fi
+  printf '%-26s %-9s %6s %6s %7s %9s %9s %5s  %s\n' TYPE SINK ITEMS READY LEASED ACCEPTED REJECTED DEAD OLDEST-READY
+  for t in $(ho_chain_types | cut -f1); do
+    IFS="$(printf '\t')" read -r t sink outcome n ready leased acc rej dead oldest gated <<SUM
+$(ho_type_summary "$t" "$items" "$dels")
+SUM
+    printf '%-26s %-9s %6s %6s %7s %9s %9s %5s  %s\n' "$t" "$sink" "$n" "$ready" "$leased" "$acc" "$rej" "$dead" "${oldest:+$((oldest / 60))m}"
+  done
+}
+
+trace_json_item() {
+  # trace_json_item <id> <depth-direction: up|down|both> — recursive JSON for one item
+  local id="$1" dir="$2" m from run type ts key cause ref sha rcpt first c
+  m="$(ho_spool)/items/$id/manifest"
+  [ -f "$m" ] || { printf 'null'; return; }
+  from=$(ho_kv_get "$m" from); run=$(ho_kv_get "$m" run); type=$(ho_kv_get "$m" type)
+  ts=$(ho_kv_get "$m" ts); key=$(ho_kv_get "$m" key); cause=$(ho_kv_get "$m" cause); ref=$(ho_kv_get "$m" ref); sha=$(ho_kv_get "$m" sha256)
+  rcpt=""; [ -f "$RINGS_HOME/$from/runs/$run.receipt" ] && rcpt="$RINGS_HOME/$from/runs/$run.receipt"
+  printf '{"item": {"id": %s, "type": %s, "from": %s, "run": %s, "ts": %s, "key": %s, "cause": %s, "ref": %s, "sha256": %s, "payloadOk": %s}, ' \
+    "$(ho_json_str "$id")" "$(ho_json_str "$type")" "$(ho_json_str "$from")" "$(ho_json_str "$run")" "$(ho_json_str "$ts")" \
+    "$(ho_json_str "$key")" "$(ho_json_or_null "$cause")" "$(ho_json_or_null "$ref")" "$(ho_json_str "$sha")" \
+    "$(json_bool "$([ "$(ho_sha256 "$(ho_spool)/items/$id/payload")" = "$sha" ] && echo 1 || echo 0)")"
+  printf '"receipt": %s, "deliveries": [' "$(ho_json_or_null "$rcpt")"
+  first=1
+  while IFS="$(printf '\t')" read -r ring _ _ _ state att created ended note; do
+    [ -n "$ring" ] || continue
+    ended=$(ho_dash "$ended"); note=$(ho_dash "$note")
+    [ "$first" -eq 1 ] || printf ', '
+    first=0
+    printf '{"ring": %s, "state": %s, "attempts": %s, "created": %s, "ended": %s, "note": %s}' \
+      "$(ho_json_str "$ring")" "$(ho_json_str "$state")" "${att:-0}" "$(ho_json_str "$created")" "$(ho_json_or_null "$ended")" "$(ho_json_or_null "$note")"
+  done <<DELS
+$(ho_scan_deliveries | awk -F'\t' -v i="$id" '$2 == i')
+DELS
+  printf '], "cause": '
+  if [ -n "$cause" ] && [ "$dir" != "down" ]; then trace_json_item "$cause" up; else printf 'null'; fi
+  printf ', "effects": ['
+  first=1
+  if [ "$dir" != "up" ]; then
+    for c in $(ho_scan_items | awk -F'\t' -v i="$id" '$7 == i { print $1 }'); do
+      [ "$first" -eq 1 ] || printf ', '
+      first=0
+      trace_json_item "$c" down
+    done
+  fi
+  printf ']}'
+}
+
+trace_text_item() {
+  # trace_text_item <id> <indent>
+  local id="$1" ind="$2" m from run type ts key cause ref rcpt c
+  m="$(ho_spool)/items/$id/manifest"
+  [ -f "$m" ] || { echo "${ind}(no item $id)"; return; }
+  from=$(ho_kv_get "$m" from); run=$(ho_kv_get "$m" run); type=$(ho_kv_get "$m" type)
+  ts=$(ho_kv_get "$m" ts); key=$(ho_kv_get "$m" key); cause=$(ho_kv_get "$m" cause); ref=$(ho_kv_get "$m" ref)
+  echo "${ind}$id  $type  key=$key${ref:+  ref=$ref}"
+  echo "${ind}  published $ts by $from run $run"
+  rcpt="$RINGS_HOME/$from/runs/$run.receipt"
+  [ -f "$rcpt" ] && echo "${ind}  receipt: $rcpt"
+  [ "$(ho_sha256 "$(ho_spool)/items/$id/payload")" = "$(ho_kv_get "$m" sha256)" ] || echo "${ind}  PAYLOAD CHECKSUM DOES NOT MATCH THE MANIFEST"
+  while IFS="$(printf '\t')" read -r ring _ _ _ state att created ended note; do
+    [ -n "$ring" ] || continue
+    ended=$(ho_dash "$ended"); note=$(ho_dash "$note")
+    echo "${ind}  -> $ring: $state after $att silent attempt(s)${ended:+ at $ended}${note:+ — $note}"
+  done <<DELS
+$(ho_scan_deliveries | awk -F'\t' -v i="$id" '$2 == i')
+DELS
+  for c in $(ho_scan_items | awk -F'\t' -v i="$id" '$7 == i { print $1 }'); do
+    echo "${ind}  caused:"
+    trace_text_item "$c" "${ind}    "
+  done
+}
+
+cmd_trace() {
+  local id="${1:-}" cause m chain
+  [ -n "$id" ] || die "usage: rings trace <id> [--json]"
+  m="$(ho_spool)/items/$id/manifest"
+  [ -f "$m" ] || die "no item $id in $(ho_spool)/items"
+  if [ "${2:-}" = "--json" ]; then trace_json_item "$id" both; echo; return 0; fi
+  # walk up to the root first so the text reads source → outcome
+  chain="$id"
+  cause=$(ho_kv_get "$m" cause)
+  while [ -n "$cause" ] && [ -f "$(ho_spool)/items/$cause/manifest" ]; do
+    chain="$cause"
+    cause=$(ho_kv_get "$(ho_spool)/items/$cause/manifest" cause)
+  done
+  trace_text_item "$chain" ""
+}
+
+cmd_feed() {
+  local n="50" json=0 a ev first ts kind ring id type text
+  for a in "$@"; do
+    case "$a" in --json) json=1 ;; *[!0-9]*) die "usage: rings feed [n] [--json]" ;; *) n="$a" ;; esac
+  done
+  ev=$(ho_events | sort -t "$(printf '\t')" -k1,1r | head -n "$n")
+  if [ "$json" -eq 1 ]; then
+    echo '{'
+    printf '  "generated": "%s",\n' "$(ho_now)"
+    echo '  "events": ['
+    first=1
+    while IFS="$(printf '\t')" read -r ts kind ring id type text; do
+      [ -n "$ts" ] || continue
+      [ "$first" -eq 1 ] || printf ',\n'
+      first=0
+      printf '    {"ts": %s, "kind": %s, "ring": %s, "id": %s, "type": %s, "text": %s}' \
+        "$(ho_json_str "$ts")" "$(ho_json_str "$kind")" "$(ho_json_str "$ring")" "$(ho_json_or_null "$id")" "$(ho_json_or_null "$type")" "$(ho_json_str "$text")"
+    done <<EV
+$ev
+EV
+    [ "$first" -eq 1 ] || printf '\n'
+    echo '  ]'
+    echo '}'
+    return 0
+  fi
+  while IFS="$(printf '\t')" read -r ts kind ring id type text; do
+    [ -n "$ts" ] || continue
+    printf '%s  %-10s %s\n' "$ts" "$kind" "$text"
+  done <<EV
+$ev
+EV
+}
+
 # --- main --------------------------------------------------------------------
 
 mkdir -p "$RINGS_HOME"
@@ -668,6 +844,10 @@ case "$cmd" in
   goals)      cmd_goals "$@" ;;
   emit)       cmd_emit "$@" ;;
   retry)      cmd_retry "$@" ;;
+  inbox)      cmd_inbox "$@" ;;
+  handoffs)   cmd_handoffs "$@" ;;
+  trace)      cmd_trace "$@" ;;
+  feed)       cmd_feed "$@" ;;
   version|-v|--version) echo "rings $RINGS_VERSION" ;;
   help|-h|--help) usage ;;
   *)          usage; exit 1 ;;

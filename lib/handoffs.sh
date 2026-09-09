@@ -484,3 +484,122 @@ INBOX
   printf '"handoffs": {"in": %s, "accepted": %s, "rejected": %s, "emitted": %s, "invalid": %s}' \
     "$nin" "$na" "$nr" "$ne" "$ni"
 }
+
+# --- queries -----------------------------------------------------------------
+
+ho_json_str() { printf '"%s"' "$(ring_json_escape "$1")"; }
+
+# TSV fields are read back with IFS=<tab>, which is whitespace IFS: an empty
+# field between two tabs collapses and shifts every later column. Producers
+# write "-" for an empty field; ho_dash turns it back into "".
+ho_dash() { if [ "$1" = "-" ]; then printf ''; else printf '%s' "$1"; fi; }
+
+ho_json_or_null() { if [ -z "$1" ] || [ "$1" = "-" ]; then printf 'null'; else ho_json_str "$1"; fi; }
+
+# ho_scan_items — TSV: id, type, from, run, ts, key, cause, ref, sha256 (sorted by id = by time)
+ho_scan_items() {
+  local m id type from run ts key cause ref sha
+  for m in "$(ho_spool)"/items/*/manifest; do
+    [ -f "$m" ] || continue
+    id=$(ho_kv_get "$m" id); type=$(ho_kv_get "$m" type); from=$(ho_kv_get "$m" from); run=$(ho_kv_get "$m" run)
+    ts=$(ho_kv_get "$m" ts); key=$(ho_kv_get "$m" key); cause=$(ho_kv_get "$m" cause); ref=$(ho_kv_get "$m" ref)
+    sha=$(ho_kv_get "$m" sha256)
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$id" "$type" "$from" "$run" "$ts" "$key" "${cause:--}" "${ref:--}" "$sha"
+  done
+}
+
+# ho_scan_deliveries — TSV: ring, id, type, from, state, attempts, created, ended, note
+ho_scan_deliveries() {
+  local spool ddir f ring id m type from state attempts created ended note
+  spool=$(ho_spool)
+  for ddir in "$spool"/deliveries/*; do
+    [ -d "$ddir" ] || continue
+    ring=$(basename "$ddir")
+    for f in "$ddir"/[0-9]*; do
+      [ -f "$f" ] || continue
+      id=$(basename "$f")
+      m="$spool/items/$id/manifest"
+      type=$(ho_kv_get "$m" type 2>/dev/null); from=$(ho_kv_get "$m" from 2>/dev/null)
+      state=$(ho_kv_get "$f" state); attempts=$(ho_kv_get "$f" attempts); created=$(ho_kv_get "$f" created)
+      ended=$(ho_kv_get "$f" ended); note=$(ho_kv_get "$f" note)
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$ring" "$id" "${type:--}" "${from:--}" "$state" "$attempts" "$created" "${ended:--}" "${note:--}"
+    done
+  done
+}
+
+# ho_iso_to_epoch <rfc3339 utc> — GNU first, BSD second; 0 when unparseable.
+ho_iso_to_epoch() {
+  local e
+  e=$(date -u -d "$1" +%s 2>/dev/null) || e=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null) || e=""
+  case "$e" in '' | *[!0-9]*) echo 0 ;; *) echo "$e" ;; esac
+}
+
+# ho_producers_of <type> — ring names whose EMITS lists the type.
+ho_producers_of() {
+  local d t
+  for d in $(each_ring); do
+    for t in $(ho_ring_types "$d" EMITS); do
+      [ "$t" = "$1" ] && basename "$d"
+    done
+  done
+}
+
+# ho_type_summary <type> <items tsv> <deliveries tsv> — one TSV line:
+# type sink outcome items ready leased accepted rejected dead oldest_ready_seconds gated
+ho_type_summary() {
+  local t="$1" items="$2" dels="$3" sink outcome n ready leased acc rej dead oldest now created gated
+  sink=$(ho_type_sink "$t")
+  outcome=0; ho_type_is_outcome "$t" && outcome=1
+  n=$(printf '%s\n' "$items" | awk -F'\t' -v t="$t" '$2 == t' | grep -c .)
+  ready=$(printf '%s\n' "$dels" | awk -F'\t' -v t="$t" '$3 == t && $5 == "ready"' | grep -c .)
+  leased=$(printf '%s\n' "$dels" | awk -F'\t' -v t="$t" '$3 == t && $5 == "leased"' | grep -c .)
+  acc=$(printf '%s\n' "$dels" | awk -F'\t' -v t="$t" '$3 == t && $5 == "accepted"' | grep -c .)
+  rej=$(printf '%s\n' "$dels" | awk -F'\t' -v t="$t" '$3 == t && $5 == "rejected"' | grep -c .)
+  dead=$(printf '%s\n' "$dels" | awk -F'\t' -v t="$t" '$3 == t && $5 == "dead"' | grep -c .)
+  oldest=""
+  created=$(printf '%s\n' "$dels" | awk -F'\t' -v t="$t" '$3 == t && $5 == "ready" { print $7 }' | sort | head -1)
+  if [ -n "$created" ]; then
+    now=$(date +%s)
+    oldest=$(( now - $(ho_iso_to_epoch "$created") ))
+  fi
+  gated=0; [ -x "$RINGS_HOME/types/$t/accept.sh" ] && gated=1
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$t" "$sink" "$outcome" "$n" "$ready" "$leased" "$acc" "$rej" "$dead" "$oldest" "$gated"
+}
+
+# ho_events — TSV: ts, kind, ring, id, type, text — unsorted; callers sort.
+ho_events() {
+  local items dels id type from run ts key cause ref sha ring state att created ended note d n line csuf nsuf
+  items=$(ho_scan_items)
+  dels=$(ho_scan_deliveries)
+  while IFS="$(printf '\t')" read -r id type from run ts key cause ref sha; do
+    [ -n "$id" ] || continue
+    csuf=""; [ "$cause" != "-" ] && csuf=" cause=$cause"
+    printf '%s\tpublished\t%s\t%s\t%s\t%s published %s %s key=%s%s\n' \
+      "$ts" "$from" "$id" "$type" "$from" "$type" "$id" "$key" "$csuf"
+  done <<ITEMS
+$items
+ITEMS
+  while IFS="$(printf '\t')" read -r ring id type from state att created ended note; do
+    [ -n "$id" ] || continue
+    nsuf=""; [ "$note" != "-" ] && nsuf=": $note"
+    case "$state" in
+      accepted | rejected | dead) printf '%s\t%s\t%s\t%s\t%s\t%s %s %s%s\n' "$ended" "$state" "$ring" "$id" "$type" "$ring" "$state" "$id" "$nsuf" ;;
+    esac
+  done <<DELS
+$dels
+DELS
+  for d in $(each_ring); do
+    n=$(basename "$d")
+    [ -s "$d/ledger.jsonl" ] || continue
+    while IFS= read -r line; do
+      ended=$(printf '%s' "$line" | sed -n 's/.*"ended": *"\([^"]*\)".*/\1/p')
+      state=$(printf '%s' "$line" | sed -n 's/.*"verdict": *"\([^"]*\)".*/\1/p')
+      run=$(printf '%s' "$line" | sed -n 's/.*"run": *"\([^"]*\)".*/\1/p')
+      [ -n "$ended" ] || continue
+      printf '%s\trun\t%s\t%s\t-\t%s run %s%s\n' "$ended" "$n" "${run:--}" "$n" "$state" "${run:+ ($run)}"
+    done < "$d/ledger.jsonl"
+  done
+}
