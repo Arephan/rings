@@ -221,6 +221,38 @@ this run produced nothing and will be recorded as a failure."
 
 # --- helpers -----------------------------------------------------------------
 
+# Shared by bin/rings and every lib. RINGS_HOME must be set by the caller.
+each_ring() {
+  local d
+  [ -d "$RINGS_HOME" ] || return 0
+  for d in "$RINGS_HOME"/*; do
+    [ -f "$d/ring.conf" ] && echo "$d"
+  done
+}
+
+conf_get() {
+  # conf_get <dir> <KEY> [default] — read one value without sourcing into our shell
+  local v
+  v=$(bash -c ". '$1/ring.conf' 2>/dev/null; printf '%s' \"\${$2:-}\"")
+  [ -z "$v" ] && v="${3:-}"
+  printf '%s' "$v"
+}
+
+last_ledger_field() {
+  # last_ledger_field <ledger> <field>
+  [ -s "$1" ] || return 1
+  tail -1 "$1" | sed -n "s/.*\"$2\": *\"\{0,1\}\([^\",}]*\).*/\1/p"
+}
+
+fleet_get() {
+  # fleet_get <KEY> [default] — read one value from $RINGS_HOME/rings.conf
+  local v
+  [ -f "$RINGS_HOME/rings.conf" ] || { printf '%s' "${2:-}"; return; }
+  v=$(bash -c ". '$RINGS_HOME/rings.conf' 2>/dev/null; printf '%s' \"\${$1:-}\"")
+  [ -z "$v" ] && v="${2:-}"
+  printf '%s' "$v"
+}
+
 ring_log() {
   local log="$1"
   shift
