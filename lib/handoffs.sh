@@ -219,7 +219,10 @@ ho_reconcile() {
   mkdir -p "$ddir"
   for t in $(ho_ring_types "$RINGS_HOME/$ring" CONSUMES); do
     since="$ddir/.since.$t"
-    [ -f "$since" ] || ho_now > "$since"
+    if [ ! -f "$since" ]; then
+      ho_now > "$since.tmp.$$"
+      mv -f "$since.tmp.$$" "$since"
+    fi
     for m in "$spool"/items/*/manifest; do
       [ -f "$m" ] || continue
       [ "$(ho_kv_get "$m" type)" = "$t" ] || continue
