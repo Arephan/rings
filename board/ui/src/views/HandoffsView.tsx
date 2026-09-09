@@ -31,7 +31,7 @@ export function HandoffsView() {
               {!t.gated && (
                 <Tooltip>
                   <TooltipTrigger render={<Badge variant="outline" className="ml-2 text-[10px]" />}>ungated</TooltipTrigger>
-                  <TooltipContent>No lease required — any subscriber may accept immediately.</TooltipContent>
+                  <TooltipContent>No accept.sh gate — items of this type are accepted on the producer's word alone.</TooltipContent>
                 </Tooltip>
               )}
             </TableCell>
