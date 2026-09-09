@@ -716,9 +716,11 @@ cmd_goals() {
     IFS="$oldifs"
     sink=$(printf '%s' "$sink" | sed -e 's/^ *//' -e 's/ *$//')
     [ -n "$sink" ] || { IFS=","; continue; }
-    id=${sink%%:*}
-    label=${sink#*:}
-    [ "$label" = "$id" ] && label=""
+    # "revenue : Money in" is a sink someone will write. The blanks around the
+    # colon belong to neither half.
+    id=$(printf '%s' "${sink%%:*}" | sed -e 's/[[:space:]]*$//')
+    label=""
+    case "$sink" in *:*) label=$(printf '%s' "${sink#*:}" | sed -e 's/^[[:space:]]*//') ;; esac
     if [ "$json" -eq 1 ]; then
       [ "$first_s" -eq 1 ] || printf ',\n'
       first_s=0
@@ -775,7 +777,9 @@ CHAIN
     hit=0
     IFS=","
     for sink in $sinks; do
-      [ "${sink%%:*}" = "$serves" ] && hit=1
+      IFS="$oldifs"
+      [ "$(printf '%s' "${sink%%:*}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')" = "$serves" ] && hit=1
+      IFS=","
     done
     IFS="$oldifs"
     case " $on_chain " in *" $n "*) hit=1 ;; esac

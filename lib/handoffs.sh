@@ -64,7 +64,9 @@ ho_chain_types() {
   for sink in $sinks; do
     IFS="$oldifs"
     sink=$(printf '%s' "$sink" | sed -e 's/^ *//' -e 's/ *$//')
-    id=${sink%%:*}
+    # A space before the colon would make the id "revenue " and every later
+    # ${CHAIN_revenue } a bad substitution, which bash prints for every sink.
+    id=$(printf '%s' "${sink%%:*}" | sed -e 's/[[:space:]]*$//')
     [ -n "$id" ] || { IFS=","; continue; }
     types=$(fleet_get "CHAIN_$id" "")
     last=""

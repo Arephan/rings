@@ -603,6 +603,19 @@ check "$(holib "ho_kv_get '$H4/spool/deliveries/bidder/$T4' state")" "accepted" 
 check "$(find "$H4/spool/items" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" "2" "the tender and the bid it caused"
 greps "nothing was counted invalid" '"handoffs": {"in": 1, "accepted": 1, "rejected": 0, "emitted": 1, "invalid": 0}' "$H4/bidder/ledger.jsonl"
 
+# 23. a sink written with blanks around the colon is still a sink
+H5="$TMP/h5"; mkdir -p "$H5"
+cat > "$H5/rings.conf" <<'FLEET'
+APEX="one outcome"
+SINKS="revenue : Money in, proof:Machine still verified"
+CHAIN_revenue="tender.discovered@1 contract.signed@1"
+FLEET
+RINGS_HOME="$H5" "$RINGS" goals > "$TMP/g5.out" 2>&1
+greps "goals names the sink without its stray blanks" '^  revenue  — Money in$' "$TMP/g5.out"
+greps "and lists the chain under it" 'tender.discovered@1' "$TMP/g5.out"
+check "$(grep -ci 'bad substitution' "$TMP/g5.out")" "0" "and bash printed no bad substitution"
+check "$(holib "RINGS_HOME='$H5' ho_type_sink contract.signed@1")" "revenue" "the type still knows its sink"
+
 # 13. everything parses under bash 3.2, which is what launchd runs
 for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh "$ROOT"/examples/*/types/*/accept.sh; do
   [ -f "$f" ] || continue
