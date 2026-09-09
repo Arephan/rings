@@ -432,7 +432,7 @@ greps "handoffs prints each chain type" 'tender.discovered@1' "$TMP/ho.out"
 greps "with counts per state" 'bid.submitted@1 *revenue *1 ' "$TMP/ho.out"
 RINGS_HOME="$H2" "$RINGS" handoffs --json > "$TMP/ho.json" 2>&1
 if command -v python3 > /dev/null 2>&1; then
-  assert "handoffs --json parses" python3 -c "import json; j=json.load(open('$TMP/ho.json')); assert j['types'][0]['type']=='tender.discovered@1'; assert j['types'][0]['accepted']==1"
+  assert "handoffs --json parses" python3 -c "import json; j=json.load(open('$TMP/ho.json')); assert j['types'][0]['type']=='tender.discovered@1'; assert j['types'][0]['accepted']==1; assert j['types'][0]['gated'] is False; assert j['types'][2]['oldestReadySeconds'] is None"
 fi
 RINGS_HOME="$H2" "$RINGS" trace "$BID" > "$TMP/trace.out" 2>&1
 greps "trace shows the item" "$BID" "$TMP/trace.out"

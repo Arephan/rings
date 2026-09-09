@@ -669,7 +669,7 @@ DELS
 }
 
 cmd_handoffs() {
-  local items dels t sink outcome n ready leased acc rej dead oldest gated first subs prods s
+  local items dels t sink outcome n ready leased acc rej dead oldest gated first subs prods s oldest_txt
   items=$(ho_scan_items)
   dels=$(ho_scan_deliveries)
   if [ "${1:-}" = "--json" ]; then
@@ -690,7 +690,7 @@ SUM
       subs=""; for s in $(ho_subscribers_of "$t"); do subs="$subs${subs:+, }$(ho_json_str "$s")"; done
       prods=""; for s in $(ho_producers_of "$t"); do prods="$prods${prods:+, }$(ho_json_str "$s")"; done
       printf '    {"type": %s, "sink": %s, "outcome": %s, "items": %s, "ready": %s, "leased": %s, "accepted": %s, "rejected": %s, "dead": %s, "oldestReadySeconds": %s, "gated": %s, "subscribers": [%s], "producers": [%s]}' \
-        "$(ho_json_str "$t")" "$(ho_json_str "$sink")" "$(json_bool "$outcome")" "$n" "$ready" "$leased" "$acc" "$rej" "$dead" "${oldest:-null}" "$(json_bool "$gated")" "$subs" "$prods"
+        "$(ho_json_str "$t")" "$(ho_json_str "$sink")" "$(json_bool "$outcome")" "$n" "$ready" "$leased" "$acc" "$rej" "$dead" "$(json_num "$oldest")" "$(json_bool "$gated")" "$subs" "$prods"
     done
     [ "$first" -eq 1 ] || printf '\n'
     echo '  ]'
@@ -707,7 +707,9 @@ SUM
     IFS="$(printf '\t')" read -r t sink outcome n ready leased acc rej dead oldest gated <<SUM
 $(ho_type_summary "$t" "$items" "$dels")
 SUM
-    printf '%-26s %-9s %6s %6s %7s %9s %9s %5s  %s\n' "$t" "$sink" "$n" "$ready" "$leased" "$acc" "$rej" "$dead" "${oldest:+$((oldest / 60))m}"
+    oldest_txt=""
+    [ "$oldest" != "-" ] && oldest_txt="$((oldest / 60))m"
+    printf '%-26s %-9s %6s %6s %7s %9s %9s %5s  %s\n' "$t" "$sink" "$n" "$ready" "$leased" "$acc" "$rej" "$dead" "$oldest_txt"
   done
 }
 

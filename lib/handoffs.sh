@@ -565,8 +565,9 @@ ho_type_summary() {
     oldest=$(( now - $(ho_iso_to_epoch "$created") ))
   fi
   gated=0; [ -x "$RINGS_HOME/types/$t/accept.sh" ] && gated=1
+  # oldest is "-" when nothing is ready: an empty TSV field would shift gated left (see ho_dash).
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$t" "$sink" "$outcome" "$n" "$ready" "$leased" "$acc" "$rej" "$dead" "$oldest" "$gated"
+    "$t" "$sink" "$outcome" "$n" "$ready" "$leased" "$acc" "$rej" "$dead" "${oldest:--}" "$gated"
 }
 
 # ho_events — TSV: ts, kind, ring, id, type, text — unsorted; callers sort.
