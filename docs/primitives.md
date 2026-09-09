@@ -71,7 +71,7 @@ should feel like a decision.
 
 **Halt.** `rings halt <name>` writes `.halt` with a timestamp and your reason. The
 ring skips every run until `rings resume`. The schedule is untouched, so the ring
-stays visible in `rings list` — as `HALTED`, which is exactly what you want six
+stays visible in `rings list` — as `halted`, which is exactly what you want six
 weeks later when you have forgotten it exists. `rings doctor` reports halted rings
 for the same reason.
 

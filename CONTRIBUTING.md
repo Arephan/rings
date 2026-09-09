@@ -23,8 +23,12 @@ belongs in your ring's hooks instead — that is what they are for.
 
 ```bash
 bash test/smoke.sh
-shellcheck -s bash -e SC1090,SC1091,SC2034 bin/rings lib/ring.sh
+shellcheck -s bash -e SC1090,SC1091,SC2034 bin/rings lib/*.sh test/smoke.sh \
+  template/hooks/*.sh examples/*/agent.sh examples/*/*/agent.sh \
+  examples/*/*/hooks/*.sh examples/*/types/*/accept.sh
 ```
+
+That shellcheck line is the one CI runs, over every shell file the repo ships.
 
 New behaviour needs a case in `test/smoke.sh`, and the test has to fail without
 your change. The suite runs with no API key and no network; keep it that way.

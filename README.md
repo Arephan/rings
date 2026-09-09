@@ -280,8 +280,9 @@ rings version
 ├── rings.conf           what the fleet is for: APEX, SINKS, and each CHAIN_<sink>
 ├── types/
 │   └── <type>/accept.sh the gate for one handoff type, if it has one
-├── spool/               every handoff item and its delivery records — read it with
-│                         rings inbox / handoffs / trace / feed, never by hand
+├── spool/               every handoff item and its delivery records — written by
+│                         the runner, readable and repairable by hand; rings
+│                         inbox / handoffs / trace / feed are the easy way in
 └── <name>/
     ├── ring.conf        the five primitives, plus EMITS / CONSUMES / SERVES
     ├── RUNBOOK.md       the contract — this is the prompt

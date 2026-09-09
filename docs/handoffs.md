@@ -290,6 +290,11 @@ decision per line. It is the one format that both an agent and bash 3.2 write
 and read without a parser. A line the runner cannot parse is recorded in the
 receipt as `invalid` and reported by `rings doctor`; it never becomes an item.
 
+Values of `key=`, `cause=`, `ref=` and `file=` cannot contain spaces (encode a
+space as `%20` or `-`); a token that is none of those makes the whole line
+invalid. Leading blanks, a leading `- `, and a trailing carriage return are
+ignored.
+
 Only complete lines (ending in a newline) are processed, so a run killed at the
 timeout cannot publish half a candidate.
 
@@ -413,8 +418,8 @@ Added to `rings doctor`, next to the existing findings:
 | `[dead-letter]` | items that reached `MAX_ATTEMPTS`; each one is work the fleet dropped |
 | `[invalid]` | a ring's last 20 receipts include candidates or decisions the runner refused |
 | `[ungated]` | a declared type has no `accept.sh` |
-| `[orphan]` | a type is emitted and no ring consumes it (same finding as v0.2) |
-| `[dangling]` | a ring consumes a type no chain declares |
+| `[orphan]` | a type is emitted and no ring consumes it; an outcome type is exempt — nothing consumes the end of a chain, the funnel does |
+| `[dangling]` | a ring names (emits or consumes) a type no chain declares |
 
 ## Board
 

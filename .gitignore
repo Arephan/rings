@@ -6,6 +6,12 @@
 ledger.jsonl
 examples/*/out/
 examples/*/*/out/
+# running a demo in its own directory instead of a throwaway home
+examples/*/spool/
+examples/*/*/runs/
+examples/*/*/in/
+examples/*/*/.prompt
+examples/*/*/out/emit/
 .DS_Store
 docs/superpowers/
 board/ui/node_modules/
