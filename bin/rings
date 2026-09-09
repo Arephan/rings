@@ -11,6 +11,8 @@ RINGS_HOME="${RINGS_HOME:-$HOME/.rings}"
 . "$SELF/lib/ring.sh"
 # shellcheck source=../lib/contracts.sh
 . "$SELF/lib/contracts.sh"
+# shellcheck source=../lib/handoffs.sh
+. "$SELF/lib/handoffs.sh"
 
 usage() {
   cat <<'EOF'

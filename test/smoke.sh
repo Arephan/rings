@@ -222,6 +222,38 @@ case "$MT" in
   *)             ok  "ring_mtime returns digits, not whatever stat printed" ;;
 esac
 
+# 14. handoffs — foundations
+HO="$TMP/ho"; mkdir -p "$HO"
+cat > "$HO/rings.conf" <<'FLEET'
+APEX="one outcome"
+SINKS="revenue:Money in, proof:Machine still verified"
+CHAIN_revenue="tender.discovered@1 bid.submitted@1 contract.signed@1"
+CHAIN_proof="sweep.ran@1"
+FLEET
+holib() { RINGS_HOME="$HO" bash -c ". '$ROOT/lib/ring.sh'; . '$ROOT/lib/handoffs.sh'; $*"; }
+check "$(holib ho_chain_types | wc -l | tr -d ' ')" "4" "ho_chain_types lists every type in every chain"
+check "$(holib ho_type_sink contract.signed@1)" "revenue" "a type knows its sink"
+check "$(holib 'ho_type_is_outcome contract.signed@1 && echo yes')" "yes" "the last type in a chain is the outcome"
+check "$(holib 'ho_type_is_outcome tender.discovered@1 || echo no')" "no" "an earlier type is not"
+check "$(holib 'ho_type_declared nope@1 || echo no')" "no" "an undeclared type is refused"
+ID=$(holib ho_new_id)
+case "$ID" in
+  [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]-[0-9][0-9]-[0-9][0-9]Z-??????) ok "ids are timestamp-dash-hex" ;;
+  *) bad "ids are timestamp-dash-hex (got $ID)" ;;
+esac
+printf 'hello' > "$TMP/p"
+check "$(holib "ho_sha256 '$TMP/p'")" "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" "sha256 of a payload is the real sha256"
+holib "ho_kv_set '$TMP/kv' state ready; ho_kv_set '$TMP/kv' attempts 0; ho_kv_set '$TMP/kv' state leased"
+check "$(holib "ho_kv_get '$TMP/kv' state")" "leased" "kv_set replaces a key in place"
+check "$(grep -c . "$TMP/kv")" "2" "kv_set does not duplicate keys"
+mkdir -p "$HO/scout" "$HO/bidder"
+printf 'EMITS="tender.discovered@1"\n' > "$HO/scout/ring.conf"
+printf 'CONSUMES="tender.discovered@1 producer.rows:kind=lead"\nEMITS="bid.submitted@1"\n' > "$HO/bidder/ring.conf"
+check "$(holib "ho_ring_types '$HO/bidder' CONSUMES")" "tender.discovered@1" "ring_types returns only @ entries"
+check "$(holib ho_subscribers_of tender.discovered@1)" "bidder" "subscribers are rings whose CONSUMES names the type"
+check "$(holib "ho_ring_emits scout tender.discovered@1 && echo yes")" "yes" "a ring may emit what its EMITS lists"
+check "$(holib "ho_ring_emits scout bid.submitted@1 || echo no")" "no" "and nothing else"
+
 # 13. everything parses under bash 3.2, which is what launchd runs
 for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh; do
   [ -f "$f" ] || continue
