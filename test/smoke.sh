@@ -531,6 +531,38 @@ RINGS_HOME="$H3" "$RINGS" doctor > "$TMP/d3.out" 2>&1
 greps "the demo ships one ungated type on purpose" '\[ungated\].*prospect.qualified@1' "$TMP/d3.out"
 check "$(grep -c '^\[' "$TMP/d3.out")" "1" "the demo ships exactly one finding"
 
+# 21. handoffs — a refusal is a failure, and retry only revives the dead
+RINGS_HOME="$HO" "$RINGS" emit scout tender.discovered@1 key=T-1 --file "$TMP/tender.json" > "$TMP/dup.out" 2>&1
+check "$?" "1" "a refused emit exits 1"
+greps "and says why on stdout" "refused duplicate of $TID" "$TMP/dup.out"
+
+RINGS_HOME="$HO" "$RINGS" retry "$TID" bidder > "$TMP/retry-acc.out" 2>&1
+check "$?" "1" "retry refuses a delivery that is not dead"
+greps "and names the state it is in" "refused $TID is accepted at bidder, not dead" "$TMP/retry-acc.out"
+check "$(holib "ho_kv_get '$HO/spool/deliveries/bidder/$TID' state")" "accepted" "and the record is untouched"
+
+RINGS_HOME="$H2" "$RINGS" retry not-an-id > "$TMP/retry-noid.out" 2>&1
+check "$?" "1" "retry on an id with no item exits 1"
+greps "and says there is no such item" "no item not-an-id" "$TMP/retry-noid.out"
+RINGS_HOME="$H2" "$RINGS" retry "$T100" ghostring > "$TMP/retry-noring.out" 2>&1
+check "$?" "1" "retry at a ring that does not exist exits 1"
+greps "and names the ring" "no ring named ghostring" "$TMP/retry-noring.out"
+assert "and no delivery record was invented for it" test ! -e "$H2/spool/deliveries/ghostring"
+RINGS_HOME="$H2" "$RINGS" retry "$BID" > "$TMP/retry-nodead.out" 2>&1
+greps "a ringless retry with nothing dead says so" "nothing dead for $BID" "$TMP/retry-nodead.out"
+
+# the CLI has no lease of its own: a cause the ring has taken is enough
+OUT=$(RINGS_HOME="$H2" "$RINGS" emit bidder bid.submitted@1 key=CLI-1 cause="$T100" ref=x --file "$TMP/bid.json")
+case "$OUT" in ok\ *) ok "emit from the CLI may name a cause the ring accepted" ;; *) bad "emit from the CLI may name a cause the ring accepted ($OUT)" ;; esac
+CLIID=${OUT#ok }
+check "$(holib "ho_kv_get '$H2/spool/items/$CLIID/manifest' cause")" "$T100" "and the item records it"
+OUT=$(RINGS_HOME="$H2" "$RINGS" emit scout tender.discovered@1 key=CLI-2 cause="$T100" ref=x --file "$TMP/bid.json")
+check "$OUT" "refused cause $T100 has not been taken by scout (no leased or accepted delivery)" "a cause the ring never took is still refused"
+
+OUT=$(RINGS_HOME="$H2" "$RINGS" emit scout tender.discovered@1 key=DIR-1 --file "$TMP")
+case "$OUT" in refused*not\ a\ regular\ file*) ok "a directory is not a payload" ;; *) bad "a directory is not a payload ($OUT)" ;; esac
+assert "and nothing was left in incoming" test -z "$(ls -A "$H2/spool/incoming" 2>/dev/null)"
+
 # 13. everything parses under bash 3.2, which is what launchd runs
 for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh "$ROOT"/examples/*/types/*/accept.sh; do
   [ -f "$f" ] || continue

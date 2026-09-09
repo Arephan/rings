@@ -152,22 +152,37 @@ ho_deliver() {
 # built-in checks from docs/handoffs.md, then the type's accept.sh if there is one.
 ho_publish() {
   local ring="$1" run="$2" type="$3" key="$4" cause="$5" ref="$6" payload="$7"
-  local spool id tmp sha bytes sub dup gate why drec
+  local spool id tmp sha bytes sub dup gate why drec cstate
   spool=$(ho_spool)
 
   ho_type_declared "$type" || { echo "refused $type is not declared in any CHAIN_ line of rings.conf"; return 0; }
   ho_ring_emits "$ring" "$type" || { echo "refused $ring does not list $type in EMITS"; return 0; }
   [ -n "$key" ] || { echo "refused key= is required"; return 0; }
-  [ -s "$payload" ] || { echo "refused payload $payload is missing or empty"; return 0; }
+  if [ ! -f "$payload" ] || [ ! -s "$payload" ]; then
+    echo "refused payload $payload is missing, empty or not a regular file"; return 0
+  fi
   if ho_type_is_outcome "$type" && [ -z "$ref" ]; then
     echo "refused $type is an outcome and needs ref= into the system where it happened"; return 0
   fi
   if [ -n "$cause" ]; then
     [ -f "$spool/items/$cause/manifest" ] || { echo "refused cause $cause is not a published item"; return 0; }
     drec="$spool/deliveries/$ring/$cause"
-    if [ "$(ho_kv_get "$drec" leased_by 2>/dev/null)" != "$run" ] && [ "$(ho_kv_get "$drec" decided_by 2>/dev/null)" != "$run" ]; then
-      echo "refused cause $cause was not leased to run $run of $ring"; return 0
-    fi
+    case "$run" in
+      cli-*)
+        # A hand-run emit has no lease of its own. The weaker rule it has to
+        # satisfy is that the ring has taken the cause at some point: a run of
+        # it holds the lease now, or a run of it decided to accept.
+        cstate=$(ho_kv_get "$drec" state 2>/dev/null)
+        if [ "$cstate" != "leased" ] && [ "$cstate" != "accepted" ]; then
+          echo "refused cause $cause has not been taken by $ring (no leased or accepted delivery)"; return 0
+        fi
+        ;;
+      *)
+        if [ "$(ho_kv_get "$drec" leased_by 2>/dev/null)" != "$run" ] && [ "$(ho_kv_get "$drec" decided_by 2>/dev/null)" != "$run" ]; then
+          echo "refused cause $cause was not leased to run $run of $ring"; return 0
+        fi
+        ;;
+    esac
   fi
   if dup=$(ho_find_key "$type" "$key"); then
     echo "refused duplicate of $dup"; return 0
@@ -330,11 +345,18 @@ ho_release_run() {
 }
 
 # ho_retry <id> <ring> — dead → ready, attempts reset; or a fresh record.
+# Only a dead delivery is retried. Resetting a leased one would hand the same
+# work to two runs at once, and resetting an accepted one would repeat an
+# action already taken in the world; both are refused.
 ho_retry() {
-  local f
+  local f state
   f="$(ho_spool)/deliveries/$2/$1"
   [ -f "$(ho_spool)/items/$1/manifest" ] || { echo "no item $1"; return 1; }
   if [ -f "$f" ]; then
+    state=$(ho_kv_get "$f" state)
+    if [ "$state" != "dead" ]; then
+      echo "refused $1 is $state at $2, not dead"; return 1
+    fi
     ho_kv_set "$f" state ready
     ho_kv_set "$f" attempts 0
     ho_kv_set "$f" leased_by ""

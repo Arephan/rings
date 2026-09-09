@@ -805,7 +805,7 @@ CHAIN
 
 cmd_emit() {
   # rings emit <ring> <type> key=<k> [cause=<id>] [ref=<r>] --file <payload>
-  local ring="${1:-}" type="${2:-}" key="" cause="" ref="" file="" tok
+  local ring="${1:-}" type="${2:-}" key="" cause="" ref="" file="" tok res
   [ -n "$ring" ] && [ -n "$type" ] || die "usage: rings emit <ring> <type> key=<k> [cause=<id>] [ref=<r>] --file <payload>"
   ring_dir_for "$ring" > /dev/null || die "no ring named $ring"
   shift 2
@@ -820,22 +820,30 @@ cmd_emit() {
     esac
   done
   [ -n "$file" ] || die "--file <payload> is required"
-  ho_publish "$ring" "cli-$(ho_run_id)" "$type" "$key" "$cause" "$ref" "$file"
+  # A refusal is a failure. A script that pipes emit into something else has to
+  # be able to tell "published" from "refused" without reading the English.
+  res=$(ho_publish "$ring" "cli-$(ho_run_id)" "$type" "$key" "$cause" "$ref" "$file")
+  printf '%s\n' "$res"
+  case "$res" in ok\ *) ;; *) exit 1 ;; esac
 }
 
 cmd_retry() {
   # rings retry <id> [<ring>] — with no ring, every consumer that has the item dead.
-  local id="${1:-}" ring="${2:-}" f
+  local id="${1:-}" ring="${2:-}" f hit=0
   [ -n "$id" ] || die "usage: rings retry <id> [<ring>]"
+  [ -f "$(ho_spool)/items/$id/manifest" ] || die "no item $id"
   if [ -n "$ring" ]; then
+    ring_dir_for "$ring" > /dev/null || die "no ring named $ring"
     ho_retry "$id" "$ring"
     return
   fi
   for f in "$(ho_spool)"/deliveries/*/"$id"; do
     [ -f "$f" ] || continue
     [ "$(ho_kv_get "$f" state)" = "dead" ] || continue
+    hit=1
     ho_retry "$id" "$(basename "$(dirname "$f")")"
   done
+  [ "$hit" -eq 1 ] || echo "nothing dead for $id"
 }
 
 cmd_inbox() {
