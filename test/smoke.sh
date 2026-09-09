@@ -479,7 +479,8 @@ rm -f "$H2/spool/deliveries/sleeper/$T100"
 echo "2000-01-01T00:00:00Z" > "$H2/spool/deliveries/sleeper/.since.tender.discovered@1"   # backdate the marker so T100 counts as undelivered
 RINGS_HOME="$H2" "$RINGS" doctor > "$TMP/d.out" 2>&1
 greps "doctor: a type with no gate" '\[ungated\].*tender.discovered@1' "$TMP/d.out"
-greps "doctor: an emitted type nobody consumes" '\[orphan\].*contract.signed@1' "$TMP/d.out"
+greps "doctor: an emitted type nobody consumes" '\[orphan\].*bid.submitted@1' "$TMP/d.out"
+check "$(grep -c '\[orphan\].*contract.signed@1' "$TMP/d.out")" "0" "doctor: an outcome type is never an orphan"
 greps "doctor: a ring naming an undeclared type" '\[dangling\].*lost.*nope@1' "$TMP/d.out"
 greps "doctor: dead letters" '\[dead-letter\].*sleeper.*'"$T3" "$TMP/d.out"
 greps "doctor: a receipt with refused lines" '\[invalid\].*bidder' "$TMP/d.out"
@@ -528,6 +529,7 @@ greps "the trace of the deal starts at the prospect" '^[^ ].*prospect.qualified@
 greps "and reaches the deal with its external ref" 'deal.signed@1.*ref=https://contracts.example.test/' "$TMP/t3.out"
 RINGS_HOME="$H3" "$RINGS" doctor > "$TMP/d3.out" 2>&1
 greps "the demo ships one ungated type on purpose" '\[ungated\].*prospect.qualified@1' "$TMP/d3.out"
+check "$(grep -c '^\[' "$TMP/d3.out")" "1" "the demo ships exactly one finding"
 
 # 13. everything parses under bash 3.2, which is what launchd runs
 for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh "$ROOT"/examples/*/types/*/accept.sh; do

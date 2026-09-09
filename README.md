@@ -141,8 +141,9 @@ worth more than everything else here combined.
 
 A chain is **data, not control flow**. An upstream ring writes its deliverable; a
 downstream ring reads it and decides for itself whether it is fresh enough to use.
-Nothing orchestrates anything. There is no scheduler process, no message bus, and
-nothing to be down.
+Nothing orchestrates anything. There is no scheduler process and nothing to be
+down; handoffs (below) add delivery and receipts, still as files, still with no
+process.
 
 ```bash
 # in the downstream ring.conf
@@ -241,9 +242,9 @@ Runner-verified, not tamper-proof — and that is said out loud in
 ```
 rings new <name>            scaffold a ring in $RINGS_HOME
 rings run <name>            run a ring once, right now
-rings list                  every ring, its schedule, its last verdict
+rings list [--json]         every ring, its schedule, its last verdict
 rings status [name]         detail for one ring, or all of them
-rings doctor                find dead, silent, runaway and unbounded rings
+rings doctor [--json]       find dead, silent, runaway and unbounded rings
 rings halt <name> [reason]  stop a ring without touching its schedule
 rings resume <name>         let it run again
 rings install <name>        register its trigger (launchd / systemd / cron)
@@ -251,7 +252,7 @@ rings uninstall <name>      unregister the trigger, keep the ring
 rings logs <name> [n]       tail the ring log
 rings chain                 the dependency graph across rings
 rings contracts [--json]    every declared handoff, and whether it is real
-rings goals                 every ring under the outcome it serves
+rings goals [--json]        every ring under the outcome it serves, and the funnel
 rings emit <ring> <type> key=<k> [cause=<id>] [ref=<r>] --file <payload>
                             publish a work item from a script or by hand
 rings retry <id> [<ring>]   dead → ready with attempts reset; or hand an item to a ring
@@ -279,7 +280,7 @@ rings version
 ├── rings.conf           what the fleet is for: APEX, SINKS, and each CHAIN_<sink>
 ├── types/
 │   └── <type>/accept.sh the gate for one handoff type, if it has one
-├── spool/               every handoff item, delivery and receipt — read it with
+├── spool/               every handoff item and its delivery records — read it with
 │                         rings inbox / handoffs / trace / feed, never by hand
 └── <name>/
     ├── ring.conf        the five primitives, plus EMITS / CONSUMES / SERVES
