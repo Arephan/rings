@@ -503,6 +503,15 @@ if command -v python3 > /dev/null 2>&1; then
   assert "goals --json parses with the chain" python3 -c "import json; j=json.load(open('$TMP/g.json')); c=j['sinks'][0]['chain']; assert c[0]['type']=='tender.discovered@1' and c[0]['items']==2 and c[2]['outcome'] is True; assert 'lost' in j['unserved'] and 'bidder' not in j['unserved']"
 fi
 
+mkdir -p "$H2/multi/out"; printf 'AGENT="true"\nTIMEOUT=5\nNOTIFY="none"\n' > "$H2/multi/ring.conf"; echo "# multi" > "$H2/multi/RUNBOOK.md"
+RINGS_HOME="$H2" "$RINGS" halt multi "$(printf 'line one\nline two')" > /dev/null
+RINGS_HOME="$H2" "$RINGS" doctor > "$TMP/d-multi.out" 2>&1
+check "$(grep -c '^\[line two\]' "$TMP/d-multi.out")" "0" "a multi-line halt reason stays one finding"
+RINGS_HOME="$H2" "$RINGS" doctor --json > "$TMP/d-multi.json" 2>&1
+if command -v python3 > /dev/null 2>&1; then
+  assert "and one json entry" python3 -c "import json; j=json.load(open('$TMP/d-multi.json')); h=[f for f in j['findings'] if f['tag']=='halted' and 'multi' in f['text']]; assert len(h)==1 and 'line one line two' in h[0]['text']; assert not [f for f in j['findings'] if f['tag']=='line two']"
+fi
+
 # 13. everything parses under bash 3.2, which is what launchd runs
 for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh; do
   [ -f "$f" ] || continue

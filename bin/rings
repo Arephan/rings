@@ -173,9 +173,10 @@ cmd_status() {
 DOCTOR_FINDINGS=""
 
 doctor_note() {
-  # doctor_note <tag> <text> — one finding; rendered as text or json at the end
-  printf '%s\t%s\n' "$1" "$2" >> "$DOCTOR_FINDINGS"
-}
+  # doctor_note <tag> <text> — one finding; rendered as text or json at the end.
+  # One finding is one line: newlines and tabs in the text become spaces.
+  printf '%s\t%s\n' "$1" "$(printf '%s' "$2" | tr '\n\t\r' '   ')"
+} >> "$DOCTOR_FINDINGS"
 
 doctor_interval_seconds() {
   # doctor_interval_seconds <ring dir> — the gap between two scheduled runs, from
