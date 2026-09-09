@@ -622,6 +622,17 @@ check "$?" "1" "feed 0 exits 1"
 greps "and prints the usage" 'usage: rings feed' "$TMP/feed0.out"
 check "$(RINGS_HOME="$H2" "$RINGS" feed 007 | grep -c .)" "7" "a padded count is still a count"
 
+# 25. rings demo — one command to a moving funnel
+H6="$TMP/h6"; mkdir -p "$H6"
+RINGS_HOME="$H6" "$RINGS" demo > "$TMP/demo.out" 2>&1
+check "$?" "0" "rings demo runs on an empty RINGS_HOME"
+greps "demo prints the funnel" 'deal.signed@1 *1' "$TMP/demo.out"
+greps "demo prints the feed" 'published prospect.qualified@1' "$TMP/demo.out"
+greps "demo tells you what to do next" 'rings trace' "$TMP/demo.out"
+RINGS_HOME="$H6" "$RINGS" demo > "$TMP/demo2.out" 2>&1
+check "$?" "1" "demo refuses to overwrite a RINGS_HOME that already has rings"
+greps "and says how to try it elsewhere" 'RINGS_HOME=' "$TMP/demo2.out"
+
 # 13. everything parses under bash 3.2, which is what launchd runs
 for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh "$ROOT"/examples/*/types/*/accept.sh; do
   [ -f "$f" ] || continue

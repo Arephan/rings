@@ -29,30 +29,24 @@ twice. Then they discover the same five failures in the same order:
 part you should be writing — what the agent is actually for — stays in a markdown
 file you own.
 
-## Install
+## Five minutes
 
 ```bash
 git clone https://github.com/Arephan/rings.git ~/rings
-ln -s ~/rings/bin/rings /usr/local/bin/rings   # or just add ~/rings/bin to PATH
-rings version
+export PATH="$HOME/rings/bin:$PATH"
+rings demo      # three rings hand one fact to an outcome, in ~/.rings
+rings board     # watch it at http://127.0.0.1:7781 (needs node 18+)
 ```
 
-Requirements: bash, `curl` if you want notifications, and `timeout` (or `gtimeout`
-from coreutils on macOS) if you want the wall clock enforced. That's it.
-
-Run the test suite before you trust it with a schedule. It needs no API key and no
-network:
-
-```bash
-bash ~/rings/test/smoke.sh
-```
-
-## Your first ring
+`rings demo` copies three rings — scout, bidder, closer — into `~/.rings`, runs
+each once, and prints the funnel and the feed. Nothing calls a model; the agents
+are shell scripts. `rings board` shows the same data as a page and re-reads it
+every five seconds. Then:
 
 ```bash
-rings new nightly-digest
+rings new nightly-digest                     # your first real ring
 $EDITOR ~/.rings/nightly-digest/RUNBOOK.md   # what it is for
-$EDITOR ~/.rings/nightly-digest/ring.conf    # when, with what, how you'll know
+$EDITOR ~/.rings/nightly-digest/ring.conf    # when, with what, how you will know
 rings run nightly-digest                     # by hand, watch it
 rings install nightly-digest                 # only now give it a schedule
 ```
@@ -60,7 +54,12 @@ rings install nightly-digest                 # only now give it a schedule
 `rings install` writes a launchd agent on macOS and a systemd user timer on Linux,
 from the `SCHEDULE` line in `ring.conf`. You never write a plist.
 
-Or, with nothing installed at all:
+Requirements: bash, `timeout` (or `gtimeout` from coreutils on macOS) to enforce
+the wall clock, `curl` for notifications. `rings board` alone needs node 18+.
+Run `bash test/smoke.sh` before you trust any of it with a schedule; it needs no
+API key and no network.
+
+Or skip the demo and run a shipped example directly, with nothing installed at all:
 
 ```bash
 rings run examples/hello-ring

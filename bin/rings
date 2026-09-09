@@ -37,6 +37,7 @@ rings — one ring is one agent loop: trigger, goal, verifier, stop, memory.
   rings trace <id> [--json]   one item's whole life, source to outcome
   rings feed [n] [--json]     the newest n events across the fleet (default 50)
   rings board [port]          serve the read-only board on localhost (default 7781)
+  rings demo                  three rings, one fact, one outcome — in an empty RINGS_HOME
   rings version
 
 Rings live in $RINGS_HOME (override with RINGS_HOME). A ring is a directory
@@ -1039,6 +1040,34 @@ cmd_board() {
   RINGS_HOME="$RINGS_HOME" RINGS_BIN="$SELF/bin/rings" exec node "$SELF/board/server.mjs" "$port"
 }
 
+cmd_demo() {
+  # rings demo — copy the three-ring demo into an empty $RINGS_HOME and run it once.
+  local r
+  if [ -n "$(each_ring)" ]; then
+    die "$RINGS_HOME already has rings. Try the demo somewhere empty: RINGS_HOME=/tmp/rings-demo rings demo"
+  fi
+  cp -R "$SELF/examples/handoff-demo/." "$RINGS_HOME/" || die "could not copy the demo into $RINGS_HOME"
+  chmod +x "$RINGS_HOME"/*/agent.sh "$RINGS_HOME"/types/*/accept.sh 2>/dev/null
+  echo "three rings in $RINGS_HOME: scout → bidder → closer. Running each once."
+  for r in scout bidder closer; do
+    if ring_run "$RINGS_HOME/$r" > /dev/null 2>&1; then
+      echo "  $r  pass"
+    else
+      echo "  $r  did not pass — rings status $r"
+    fi
+  done
+  echo
+  cmd_goals
+  echo
+  cmd_feed 10
+  echo
+  echo "Next:"
+  echo "  rings trace <any id above>   one item, source to outcome"
+  echo "  rings doctor                 the demo ships one finding on purpose"
+  echo "  rings board                  the same data as a page, re-read every 5 s"
+  command -v node >/dev/null 2>&1 || echo "  (rings board needs node 18+; without it, every number above is in the --json flags)"
+}
+
 # --- main --------------------------------------------------------------------
 
 mkdir -p "$RINGS_HOME"
@@ -1065,6 +1094,7 @@ case "$cmd" in
   trace)      cmd_trace "$@" ;;
   feed)       cmd_feed "$@" ;;
   board)      cmd_board "$@" ;;
+  demo)       cmd_demo "$@" ;;
   version|-v|--version) echo "rings $RINGS_VERSION" ;;
   help|-h|--help) usage ;;
   *)          usage; exit 1 ;;

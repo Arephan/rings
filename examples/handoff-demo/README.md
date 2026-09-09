@@ -1,5 +1,7 @@
 # handoff-demo
 
+Or just run `rings demo` in an empty `RINGS_HOME`.
+
 Three rings, one fact, one outcome. Nothing here calls a model; the agents are
 shell scripts so you can watch the mechanics for free.
 
