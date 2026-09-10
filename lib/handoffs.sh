@@ -118,16 +118,30 @@ ho_subscribers_of() {
 # --- publish -----------------------------------------------------------------
 
 # ho_find_key <type> <key> — id of the published item with that identity, if any.
+# One awk pass over every manifest: a fork per field per file is what made a
+# spool of any size slow. The wanted values travel in the environment, not in
+# -v, because awk expands escape sequences in a -v assignment and a key is
+# whatever an agent wrote.
 ho_find_key() {
-  local m
-  for m in "$(ho_spool)"/items/*/manifest; do
-    [ -f "$m" ] || continue
-    [ "$(ho_kv_get "$m" type)" = "$1" ] || continue
-    [ "$(ho_kv_get "$m" key)" = "$2" ] || continue
-    ho_kv_get "$m" id
-    return 0
-  done
-  return 1
+  local type="$1" key="$2" hit
+  set -- "$(ho_spool)"/items/*/manifest
+  [ -f "$1" ] || return 1
+  hit=$(HO_WANT_TYPE="$type" HO_WANT_KEY="$key" awk '
+    function flush() {
+      if (v["type"] == wt && v["key"] == wk) { print v["id"]; return 1 }
+      return 0
+    }
+    BEGIN { wt = ENVIRON["HO_WANT_TYPE"]; wk = ENVIRON["HO_WANT_KEY"] }
+    FILENAME != prev {
+      if (prev != "" && flush()) { done = 1; exit }
+      prev = FILENAME
+      split("", v)
+    }
+    { e = index($0, "="); if (e > 1) { k = substr($0, 1, e - 1); if (!(k in v)) v[k] = substr($0, e + 1) } }
+    END { if (!done && prev != "") flush() }
+  ' "$@")
+  [ -n "$hit" ] || return 1
+  printf '%s\n' "$hit"
 }
 
 # ho_deliver <id> <ring> — a ready delivery record, created once, never twice.
@@ -230,39 +244,57 @@ ho_publish() {
 #    consuming it, has a delivery record;
 # 2. every lease that outlived its lease_until goes back to ready (or dead).
 ho_reconcile() {
-  local ring="$1" now="$2" spool ddir t since m id ts f until max since_ts
-  spool=$(ho_spool)
-  ddir="$spool/deliveries/$ring"
+  local ring="$1" now="$2" ddir t since id itype ts f max since_ts items expired
+  ddir="$(ho_spool)/deliveries/$ring"
   mkdir -p "$ddir"
+  items=$(ho_scan_items)
   for t in $(ho_ring_types "$RINGS_HOME/$ring" CONSUMES); do
     since="$ddir/.since.$t"
     if [ ! -f "$since" ]; then
       ho_now > "$since.tmp.$$"
       mv -f "$since.tmp.$$" "$since"
     fi
-    for m in "$spool"/items/*/manifest; do
-      [ -f "$m" ] || continue
-      [ "$(ho_kv_get "$m" type)" = "$t" ] || continue
-      ts=$(ho_kv_get "$m" ts)
+    since_ts=$(cat "$since")
+    while IFS="$(printf '\t')" read -r id itype _ _ ts _; do
+      [ -n "$id" ] || continue
+      [ "$itype" = "$t" ] || continue
       # RFC3339 UTC strings sort as time; a string compare is exact here. The
       # marker has one-second resolution, and the boundary second counts as
       # after it: a new subscriber may see one extra item from that second,
       # while an item whose record was lost can always be reconciled.
-      since_ts=$(cat "$since")
       [ "$ts" \< "$since_ts" ] && continue
-      id=$(ho_kv_get "$m" id)
       ho_deliver "$id" "$ring"
-    done
+    done <<ITEMS
+$items
+ITEMS
   done
   max=$(conf_get "$RINGS_HOME/$ring" MAX_ATTEMPTS 3)
-  for f in "$ddir"/[0-9]*; do
-    [ -f "$f" ] || continue
-    [ "$(ho_kv_get "$f" state)" = "leased" ] || continue
-    until=$(ho_kv_get "$f" lease_until_epoch)
-    case "$until" in '' | *[!0-9]*) until=0 ;; esac
-    [ "$until" -lt "$now" ] || continue
+  set -- "$ddir"/[0-9]*
+  [ -f "$1" ] || return 0
+  # One pass for the two fields an expired lease is decided by, rather than a
+  # sed per field per record.
+  expired=$(HO_NOW_EPOCH="$now" awk '
+    function flush() {
+      if (v["state"] != "leased") return
+      u = v["lease_until_epoch"]
+      if (u !~ /^[0-9]+$/) u = 0
+      if (u + 0 < now + 0) print prev
+    }
+    BEGIN { now = ENVIRON["HO_NOW_EPOCH"]; if (now !~ /^[0-9]+$/) now = 0 }
+    FILENAME != prev {
+      if (prev != "") flush()
+      prev = FILENAME
+      split("", v)
+    }
+    { e = index($0, "="); if (e > 1) { k = substr($0, 1, e - 1); if (!(k in v)) v[k] = substr($0, e + 1) } }
+    END { if (prev != "") flush() }
+  ' "$@")
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
     ho_release_one "$f" "$max" "lease expired"
-  done
+  done <<EXPIRED
+$expired
+EXPIRED
 }
 
 # ho_lease <ring> <run> <max items> <timeout s> <in dir>
@@ -522,7 +554,19 @@ INBOX
 
 # --- queries -----------------------------------------------------------------
 
-ho_json_str() { printf '"%s"' "$(ring_json_escape "$1")"; }
+# The same escaping ring_json_escape does — backslash first, then the quote,
+# then the three characters that cannot sit inside a JSON string — done with
+# parameter expansion. Every field of every row of --json goes through here, so
+# a sed and a tr per field is three processes per field.
+ho_json_str() {
+  local s="$1"
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/ }
+  s=${s//$'\t'/ }
+  s=${s//$'\r'/ }
+  printf '"%s"' "$s"
+}
 
 # TSV fields are read back with IFS=<tab>, which is whitespace IFS: an empty
 # field between two tabs collapses and shifts every later column. Producers
@@ -532,36 +576,69 @@ ho_dash() { if [ "$1" = "-" ]; then printf ''; else printf '%s' "$1"; fi; }
 ho_json_or_null() { if [ -z "$1" ] || [ "$1" = "-" ]; then printf 'null'; else ho_json_str "$1"; fi; }
 
 # ho_scan_items — TSV: id, type, from, run, ts, key, cause, ref, sha256 (sorted by id = by time)
+# One awk pass over every manifest, in glob order, which is id order and so time
+# order. The first "=" splits a line; a value may hold more of them. The first
+# occurrence of a key wins, as it did when this read one field with sed.
 ho_scan_items() {
-  local m id type from run ts key cause ref sha
-  for m in "$(ho_spool)"/items/*/manifest; do
-    [ -f "$m" ] || continue
-    id=$(ho_kv_get "$m" id); type=$(ho_kv_get "$m" type); from=$(ho_kv_get "$m" from); run=$(ho_kv_get "$m" run)
-    ts=$(ho_kv_get "$m" ts); key=$(ho_kv_get "$m" key); cause=$(ho_kv_get "$m" cause); ref=$(ho_kv_get "$m" ref)
-    sha=$(ho_kv_get "$m" sha256)
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$id" "$type" "$from" "$run" "$ts" "$key" "${cause:--}" "${ref:--}" "$sha"
-  done
+  set -- "$(ho_spool)"/items/*/manifest
+  [ -f "$1" ] || return 0
+  awk '
+    function flush() {
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+        v["id"], v["type"], v["from"], v["run"], v["ts"], v["key"],
+        (v["cause"] == "" ? "-" : v["cause"]),
+        (v["ref"] == "" ? "-" : v["ref"]),
+        v["sha256"]
+    }
+    FILENAME != prev {
+      if (prev != "") flush()
+      prev = FILENAME
+      split("", v)
+    }
+    { e = index($0, "="); if (e > 1) { k = substr($0, 1, e - 1); if (!(k in v)) v[k] = substr($0, e + 1) } }
+    END { if (prev != "") flush() }
+  ' "$@"
 }
 
 # ho_scan_deliveries — TSV: ring, id, type, from, state, attempts, created, ended, note
+# One awk pass over every delivery record. type and from come from the item scan,
+# handed over in the environment; a record whose item is gone keeps the "-" the
+# missing manifest used to produce.
 ho_scan_deliveries() {
-  local spool ddir f ring id m type from state attempts created ended note
-  spool=$(ho_spool)
-  for ddir in "$spool"/deliveries/*; do
-    [ -d "$ddir" ] || continue
-    ring=$(basename "$ddir")
-    for f in "$ddir"/[0-9]*; do
-      [ -f "$f" ] || continue
-      id=$(basename "$f")
-      m="$spool/items/$id/manifest"
-      type=$(ho_kv_get "$m" type 2>/dev/null); from=$(ho_kv_get "$m" from 2>/dev/null)
-      state=$(ho_kv_get "$f" state); attempts=$(ho_kv_get "$f" attempts); created=$(ho_kv_get "$f" created)
-      ended=$(ho_kv_get "$f" ended); note=$(ho_kv_get "$f" note)
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$ring" "$id" "${type:--}" "${from:--}" "$state" "$attempts" "$created" "${ended:--}" "${note:--}"
-    done
-  done
+  local items
+  set -- "$(ho_spool)"/deliveries/*/[0-9]*
+  [ -f "$1" ] || return 0
+  items=$(ho_scan_items)
+  HO_ITEMS_TSV="$items" awk '
+    function flush() {
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+        ring, id,
+        (itype[id] == "" ? "-" : itype[id]),
+        (ifrom[id] == "" ? "-" : ifrom[id]),
+        v["state"], v["attempts"], v["created"],
+        (v["ended"] == "" ? "-" : v["ended"]),
+        (v["note"] == "" ? "-" : v["note"])
+    }
+    BEGIN {
+      n = split(ENVIRON["HO_ITEMS_TSV"], rows, "\n")
+      for (i = 1; i <= n; i++) {
+        if (rows[i] == "") continue
+        split(rows[i], c, "\t")
+        itype[c[1]] = c[2]
+        ifrom[c[1]] = c[3]
+      }
+    }
+    FILENAME != prev {
+      if (prev != "") flush()
+      prev = FILENAME
+      split("", v)
+      p = split(FILENAME, part, "/")
+      ring = part[p - 1]
+      id = part[p]
+    }
+    { e = index($0, "="); if (e > 1) { k = substr($0, 1, e - 1); if (!(k in v)) v[k] = substr($0, e + 1) } }
+    END { if (prev != "") flush() }
+  ' "$@"
 }
 
 # ho_iso_to_epoch <rfc3339 utc> — GNU first, BSD second; 0 when unparseable.
@@ -581,21 +658,32 @@ ho_producers_of() {
   done
 }
 
-# ho_type_summary <type> <items tsv> <deliveries tsv> — one TSV line:
+# ho_type_summary <type> <items tsv> <deliveries tsv> [chain tsv] — one TSV line:
 # type sink outcome items ready leased accepted rejected dead oldest_ready_seconds gated
+# A caller that already read ho_chain_types passes it in; reading it here means
+# a subshell over rings.conf per sink, twice, for every type in the table.
 ho_type_summary() {
-  local t="$1" items="$2" dels="$3" sink outcome n ready leased acc rej dead oldest now created gated
-  sink=$(ho_type_sink "$t")
-  outcome=0; ho_type_is_outcome "$t" && outcome=1
-  n=$(printf '%s\n' "$items" | awk -F'\t' -v t="$t" '$2 == t' | grep -c .)
-  ready=$(printf '%s\n' "$dels" | awk -F'\t' -v t="$t" '$3 == t && $5 == "ready"' | grep -c .)
-  leased=$(printf '%s\n' "$dels" | awk -F'\t' -v t="$t" '$3 == t && $5 == "leased"' | grep -c .)
-  acc=$(printf '%s\n' "$dels" | awk -F'\t' -v t="$t" '$3 == t && $5 == "accepted"' | grep -c .)
-  rej=$(printf '%s\n' "$dels" | awk -F'\t' -v t="$t" '$3 == t && $5 == "rejected"' | grep -c .)
-  dead=$(printf '%s\n' "$dels" | awk -F'\t' -v t="$t" '$3 == t && $5 == "dead"' | grep -c .)
+  local t="$1" items="$2" dels="$3" chain="${4:-}" sink outcome n ready leased acc rej dead oldest now created gated
+  [ -n "$chain" ] || chain=$(ho_chain_types)
+  sink=$(printf '%s\n' "$chain" | awk -F'\t' -v t="$t" '$1 == t { print $2; exit }')
+  outcome=$(printf '%s\n' "$chain" | awk -F'\t' -v t="$t" '$1 == t { print ($3 == "1" ? 1 : 0); exit }')
+  [ -n "$outcome" ] || outcome=0
+  n=$(printf '%s\n' "$items" | awk -F'\t' -v t="$t" '$2 == t { n++ } END { print n + 0 }')
+  # Every state, and the earliest created= among the ready ones, in one pass.
+  # RFC3339 UTC strings sort as time, so the smallest string is the oldest.
+  IFS="$(printf '\t')" read -r ready leased acc rej dead created <<COUNTS
+$(printf '%s\n' "$dels" | awk -F'\t' -v t="$t" '
+  $3 == t {
+    if ($5 == "ready")         { r++; if (o == "" || $7 < o) o = $7 }
+    else if ($5 == "leased")   l++
+    else if ($5 == "accepted") a++
+    else if ($5 == "rejected") j++
+    else if ($5 == "dead")     d++
+  }
+  END { printf "%s\t%s\t%s\t%s\t%s\t%s\n", r + 0, l + 0, a + 0, j + 0, d + 0, (o == "" ? "-" : o) }')
+COUNTS
   oldest=""
-  created=$(printf '%s\n' "$dels" | awk -F'\t' -v t="$t" '$3 == t && $5 == "ready" { print $7 }' | sort | head -1)
-  if [ -n "$created" ]; then
+  if [ "$created" != "-" ] && [ -n "$created" ]; then
     now=$(date +%s)
     oldest=$(( now - $(ho_iso_to_epoch "$created") ))
   fi

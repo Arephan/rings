@@ -639,6 +639,36 @@ RINGS_HOME="$H6B" "$RINGS" demo > "$TMP/demo3.out" 2>&1
 check "$?" "1" "demo refuses a RINGS_HOME that holds only a hand-written rings.conf"
 check "$(grep -c 'APEX="mine"' "$H6B/rings.conf")" "1" "and leaves that rings.conf untouched"
 
+# 26. a spool of any size is read in one pass, not one process per field
+# The board polls doctor, handoffs and feed every few seconds, and each of them
+# reads the whole spool. Read one field with one process and a fleet with a few
+# hundred items spends minutes of every poll on fork(); these three seconds are
+# the wall that keeps that from coming back.
+H7="$TMP/h7"; mkdir -p "$H7"
+cat > "$H7/rings.conf" <<'FLEET'
+APEX="one outcome"
+SINKS="revenue:Money in"
+CHAIN_revenue="lead.found@1 deal.signed@1"
+FLEET
+mkdir -p "$H7/finder" "$H7/taker"
+printf 'EMITS="lead.found@1"\nAGENT="true"\nTIMEOUT=5\nNOTIFY="none"\n' > "$H7/finder/ring.conf"
+printf 'CONSUMES="lead.found@1"\nEMITS="deal.signed@1"\nAGENT="true"\nTIMEOUT=5\nINBOX_MAX=5\nNOTIFY="none"\n' > "$H7/taker/ring.conf"
+printf '{"lead": "one of many"}\n' > "$TMP/lead.json"
+BIGN=1
+while [ "$BIGN" -le 150 ]; do
+  RINGS_HOME="$H7" "$RINGS" emit finder lead.found@1 "key=lead-$BIGN" --file "$TMP/lead.json" > /dev/null
+  BIGN=$((BIGN + 1))
+done
+# one run of the consumer, so every item has a delivery record to read as well
+RINGS_HOME="$H7" "$RINGS" run taker > /dev/null 2>&1
+[ "$(find "$H7/spool/items" -name manifest | wc -l | tr -d ' ')" = "150" ] || bad "the timing fleet holds 150 items"
+for BIGCMD in doctor handoffs feed; do
+  BIGSTART=$(date +%s)
+  RINGS_HOME="$H7" "$RINGS" "$BIGCMD" --json > /dev/null
+  BIGEND=$(date +%s)
+  check "$(( BIGEND - BIGSTART <= 2 ))" "1" "$BIGCMD --json on 150 items takes at most 2 s"
+done
+
 # 13. everything parses under bash 3.2, which is what launchd runs
 # The same list CI runs shellcheck over and CONTRIBUTING prints. A shell file
 # that is in one of the three and not the others is a file nothing checks.

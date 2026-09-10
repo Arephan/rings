@@ -288,13 +288,16 @@ $dangling
 DANG
 
   # Handoffs: the spool is checked across the fleet, like contracts.
-  local items dels t sink outcome cnt ready leased acc rej dead oldest gated
+  local items dels chain t sink outcome cnt ready leased acc rej dead oldest gated
   local ring_name ddir f state created ts age limit nd ids since m id ninv nrc
+  local now cutoff spool subs cand
   items=$(ho_scan_items)
   dels=$(ho_scan_deliveries)
-  for t in $(ho_chain_types | cut -f1); do
+  # ho_chain_types re-reads rings.conf in a subshell per sink; read it once.
+  chain=$(ho_chain_types)
+  for t in $(printf '%s\n' "$chain" | cut -f1); do
     IFS="$(printf '\t')" read -r t sink outcome cnt ready leased acc rej dead oldest gated <<SUM
-$(ho_type_summary "$t" "$items" "$dels")
+$(ho_type_summary "$t" "$items" "$dels" "$chain")
 SUM
     [ "$gated" = "0" ] && doctor_note ungated "$t has no types/$t/accept.sh — its items are accepted on the producer's word"
     # An outcome is the end of its chain: nothing consumes it, the funnel does.
@@ -302,6 +305,7 @@ SUM
       doctor_note orphan "$t is emitted and no ring consumes it"
     fi
   done
+  now=$(date +%s)
   for d in $(each_ring); do
     ring_name=$(basename "$d")
     for t in $(ho_ring_types "$d" CONSUMES) $(ho_ring_types "$d" EMITS); do
@@ -311,18 +315,22 @@ SUM
     [ -d "$ddir" ] || continue
     nd=0; ids=""
     limit=$(( $(doctor_interval_seconds "$d") * 3 ))
-    for f in "$ddir"/[0-9]*; do
-      [ -f "$f" ] || continue
-      state=$(ho_kv_get "$f" state)
-      if [ "$state" = "dead" ]; then nd=$((nd + 1)); ids="$ids $(basename "$f")"; fi
-      if [ "$state" = "ready" ]; then
-        created=$(ho_kv_get "$f" created)
-        age=$(( $(date +%s) - $(ho_iso_to_epoch "$created") ))
-        if [ "$age" -gt "$limit" ]; then
-          doctor_note backlog "$ring_name has had $(basename "$f") ready for $((age / 3600))h — more than three of its intervals"
-        fi
+    # RFC3339 UTC strings sort as time, so one conversion of the cutoff answers
+    # "older than three intervals" for every record. Converting each record's
+    # created= instead is a date(1) per ready item.
+    cutoff=$(ho_epoch_to_iso $(( now - limit )))
+    # The spool was already read once, into $dels; reading each record again here
+    # is what made doctor wait on a fork per field.
+    while IFS="$(printf '\t')" read -r _ id _ _ state _ created _ _; do
+      [ -n "$id" ] || continue
+      if [ "$state" = "dead" ]; then nd=$((nd + 1)); ids="$ids $id"; fi
+      if [ "$state" = "ready" ] && [ -n "$cutoff" ] && [ "$created" \< "$cutoff" ]; then
+        age=$(( now - $(ho_iso_to_epoch "$created") ))
+        doctor_note backlog "$ring_name has had $id ready for $((age / 3600))h — more than three of its intervals"
       fi
-    done
+    done <<RING_DELS
+$(printf '%s\n' "$dels" | awk -F'\t' -v r="$ring_name" '$1 == r')
+RING_DELS
     [ "$nd" -gt 0 ] && doctor_note dead-letter "$ring_name dropped $nd item(s):$ids — rings retry <id> $ring_name"
     if [ -d "$d/runs" ]; then
       ninv=0; nrc=0
@@ -334,17 +342,43 @@ SUM
       [ "$ninv" -gt 0 ] && doctor_note invalid "$ring_name: $ninv refused candidate(s) or decision(s) in its last $nrc receipt(s) — read $d/runs/"
     fi
   done
-  # undelivered: an item a subscriber should have a record for, and does not
-  while IFS="$(printf '\t')" read -r id t _ _ ts _ _ _ _; do
-    [ -n "$id" ] || continue
+  # undelivered: an item a subscriber should have a record for, and does not.
+  # The subscribers of a type and the marker that says when each started
+  # consuming it are the same for every item of that type: read them once per
+  # type, not once per item, then let awk pair them with the items.
+  spool=$(ho_spool)
+  subs=""
+  for t in $(printf '%s\n' "$items" | cut -f2 | sort -u); do
+    [ -n "$t" ] || continue
     for ring_name in $(ho_subscribers_of "$t"); do
-      since="$(ho_spool)/deliveries/$ring_name/.since.$t"
+      since="$spool/deliveries/$ring_name/.since.$t"
       [ -f "$since" ] || continue
-      [ "$ts" \< "$(cat "$since")" ] && continue
-      [ -f "$(ho_spool)/deliveries/$ring_name/$id" ] || doctor_note undelivered "$id ($t) has no delivery record at $ring_name — its next run reconciles it"
+      subs="$subs$(printf '%s\t%s\t%s' "$t" "$ring_name" "$(cat "$since")")
+"
     done
+  done
+  cand=$(printf '%s\n' "$items" | HO_SUBS_TSV="$subs" awk -F'\t' '
+    BEGIN {
+      n = split(ENVIRON["HO_SUBS_TSV"], rows, "\n")
+      for (i = 1; i <= n; i++) {
+        if (rows[i] == "") continue
+        split(rows[i], c, "\t")
+        nsub[c[1]]++
+        sring[c[1], nsub[c[1]]] = c[2]
+        ssince[c[1], nsub[c[1]]] = c[3]
+      }
+    }
+    $1 != "" {
+      for (i = 1; i <= nsub[$2]; i++) {
+        if ($5 < ssince[$2, i]) continue
+        printf "%s\t%s\t%s\n", $1, $2, sring[$2, i]
+      }
+    }')
+  while IFS="$(printf '\t')" read -r id t ring_name; do
+    [ -n "$id" ] || continue
+    [ -f "$spool/deliveries/$ring_name/$id" ] || doctor_note undelivered "$id ($t) has no delivery record at $ring_name — its next run reconciles it"
   done <<ITEMS
-$items
+$cand
 ITEMS
 
   issues=$(grep -c . "$DOCTOR_FINDINGS" 2>/dev/null | tr -d ' ')
@@ -680,7 +714,7 @@ DANG
 }
 
 cmd_goals() {
-  local apex sinks sink id label d n serves hit orphans oldifs json first_s first_t t ct outcome cnt prods p items on_chain
+  local apex sinks sink id label d n serves hit orphans oldifs json first_s first_t t ct outcome cnt prods p items on_chain chain
   apex=$(fleet_get APEX "")
   sinks=$(fleet_get SINKS "")
   json=0; [ "${1:-}" = "--json" ] && json=1
@@ -700,6 +734,8 @@ cmd_goals() {
   fi
 
   items=$(ho_scan_items)
+  # ho_chain_types re-reads rings.conf in a subshell per sink; read it once.
+  chain=$(ho_chain_types)
   # rings on a chain: any ring whose EMITS or CONSUMES names a declared type
   on_chain=""
   for d in $(each_ring); do
@@ -743,7 +779,7 @@ cmd_goals() {
         printf '      %-26s %4s   %s%s\n' "$t" "$cnt" "${prods:-(no producer)}" "$([ "$outcome" = "1" ] && printf '   (outcome)')"
       fi
     done <<CHAIN
-$(ho_chain_types)
+$chain
 CHAIN
     [ "$json" -eq 1 ] && printf '], "rings": ['
     hit=0
@@ -869,11 +905,13 @@ DELS
 }
 
 cmd_handoffs() {
-  local items dels t sink outcome n ready leased acc rej dead oldest gated first subs prods s oldest_txt
+  local items dels chain t sink outcome n ready leased acc rej dead oldest gated first subs prods s oldest_txt
   items=$(ho_scan_items)
   dels=$(ho_scan_deliveries)
+  # ho_chain_types re-reads rings.conf in a subshell per sink; read it once.
+  chain=$(ho_chain_types)
   if [ "${1:-}" = "--json" ]; then
-    if [ -z "$(ho_chain_types)" ]; then
+    if [ -z "$chain" ]; then
       printf '{\n  "generated": "%s",\n  "types": []\n}\n' "$(ho_now)"
       return 0
     fi
@@ -881,11 +919,11 @@ cmd_handoffs() {
     printf '  "generated": "%s",\n' "$(ho_now)"
     echo '  "types": ['
     first=1
-    for t in $(ho_chain_types | cut -f1); do
+    for t in $(printf '%s\n' "$chain" | cut -f1); do
       [ "$first" -eq 1 ] || printf ',\n'
       first=0
       IFS="$(printf '\t')" read -r t sink outcome n ready leased acc rej dead oldest gated <<SUM
-$(ho_type_summary "$t" "$items" "$dels")
+$(ho_type_summary "$t" "$items" "$dels" "$chain")
 SUM
       subs=""; for s in $(ho_subscribers_of "$t"); do subs="$subs${subs:+, }$(ho_json_str "$s")"; done
       prods=""; for s in $(ho_producers_of "$t"); do prods="$prods${prods:+, }$(ho_json_str "$s")"; done
@@ -897,21 +935,25 @@ SUM
     echo '}'
     return 0
   fi
-  if [ -z "$(ho_chain_types)" ]; then
+  if [ -z "$chain" ]; then
     echo "No CHAIN_<sink> in $RINGS_HOME/rings.conf — no handoff types are declared."
     echo 'Declare one:  CHAIN_revenue="tender.discovered@1 bid.submitted@1 contract.signed@1"'
     return 0
   fi
   printf '%-26s %-9s %6s %6s %7s %9s %9s %5s  %s\n' TYPE SINK ITEMS READY LEASED ACCEPTED REJECTED DEAD OLDEST-READY
-  for t in $(ho_chain_types | cut -f1); do
+  for t in $(printf '%s\n' "$chain" | cut -f1); do
     IFS="$(printf '\t')" read -r t sink outcome n ready leased acc rej dead oldest gated <<SUM
-$(ho_type_summary "$t" "$items" "$dels")
+$(ho_type_summary "$t" "$items" "$dels" "$chain")
 SUM
     oldest_txt=""
     [ "$oldest" != "-" ] && oldest_txt="$((oldest / 60))m"
     printf '%-26s %-9s %6s %6s %7s %9s %9s %5s  %s\n' "$t" "$sink" "$n" "$ready" "$leased" "$acc" "$rej" "$dead" "$oldest_txt"
   done
 }
+
+# The spool, read once by cmd_trace and filtered by every node of the walk.
+TRACE_ITEMS=""
+TRACE_DELS=""
 
 trace_json_item() {
   # trace_json_item <id> <depth-direction: up|down|both> — recursive JSON for one item
@@ -935,14 +977,14 @@ trace_json_item() {
     printf '{"ring": %s, "state": %s, "attempts": %s, "created": %s, "ended": %s, "note": %s}' \
       "$(ho_json_str "$ring")" "$(ho_json_str "$state")" "${att:-0}" "$(ho_json_str "$created")" "$(ho_json_or_null "$ended")" "$(ho_json_or_null "$note")"
   done <<DELS
-$(ho_scan_deliveries | awk -F'\t' -v i="$id" '$2 == i')
+$(printf '%s\n' "$TRACE_DELS" | awk -F'\t' -v i="$id" '$2 == i')
 DELS
   printf '], "cause": '
   if [ -n "$cause" ] && [ "$dir" != "down" ]; then trace_json_item "$cause" up; else printf 'null'; fi
   printf ', "effects": ['
   first=1
   if [ "$dir" != "up" ]; then
-    for c in $(ho_scan_items | awk -F'\t' -v i="$id" '$7 == i { print $1 }'); do
+    for c in $(printf '%s\n' "$TRACE_ITEMS" | awk -F'\t' -v i="$id" '$7 == i { print $1 }'); do
       [ "$first" -eq 1 ] || printf ', '
       first=0
       trace_json_item "$c" down
@@ -968,9 +1010,9 @@ trace_text_item() {
     ended=$(ho_dash "$ended"); note=$(ho_dash "$note")
     echo "${ind}  -> $ring: $state after $att silent attempt(s)${ended:+ at $ended}${note:+ — $note}"
   done <<DELS
-$(ho_scan_deliveries | awk -F'\t' -v i="$id" '$2 == i')
+$(printf '%s\n' "$TRACE_DELS" | awk -F'\t' -v i="$id" '$2 == i')
 DELS
-  for c in $(ho_scan_items | awk -F'\t' -v i="$id" '$7 == i { print $1 }'); do
+  for c in $(printf '%s\n' "$TRACE_ITEMS" | awk -F'\t' -v i="$id" '$7 == i { print $1 }'); do
     echo "${ind}  caused:"
     trace_text_item "$c" "${ind}    "
   done
@@ -981,6 +1023,10 @@ cmd_trace() {
   [ -n "$id" ] || die "usage: rings trace <id> [--json]"
   m="$(ho_spool)/items/$id/manifest"
   [ -f "$m" ] || die "no item $id in $(ho_spool)/items"
+  # Read the spool once for the whole walk. Every node of a trace used to rescan
+  # it, so a long chain read the same thousands of files over and over.
+  TRACE_ITEMS=$(ho_scan_items)
+  TRACE_DELS=$(ho_scan_deliveries)
   if [ "${2:-}" = "--json" ]; then trace_json_item "$id" both; echo; return 0; fi
   # walk up to the root first so the text reads source → outcome
   chain="$id"
