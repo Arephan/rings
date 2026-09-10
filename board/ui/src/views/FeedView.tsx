@@ -38,17 +38,22 @@ function Row({ e, onOpen }: { e: Event; onOpen: (id: string) => void }) {
 
 export function FeedView({ onOpen }: { onOpen: (id: string) => void }) {
   const { data, error } = usePoll<Feed>('/api/feed?n=200');
-  if (error) return <Problem message={error} />;
-  if (!data) return <Loading />;
-  if (data.events.length === 0) {
-    return <Nothing title="Nothing has happened yet" hint="Run a ring — or rings demo — and every run, handoff and refusal lands here." />;
-  }
+  // A failed poll is news about the reading, not about the fleet: say so above
+  // the last answer instead of replacing it with the failure.
+  if (!data) return error ? <Problem message={error} /> : <Loading />;
   // Sized off the viewport so the list scrolls inside itself and the page never does.
   return (
-    <ScrollArea className="h-[calc(100dvh-16rem)] min-h-64">
-      <div className="pr-4">
-        {data.events.map((e, i) => <Row key={`${e.ts}-${i}`} e={e} onOpen={onOpen} />)}
-      </div>
-    </ScrollArea>
+    <>
+      {error && <Problem message={error} />}
+      {data.events.length === 0 ? (
+        <Nothing title="Nothing has happened yet" hint="Run a ring — or rings demo — and every run, handoff and refusal lands here." />
+      ) : (
+        <ScrollArea className="h-[calc(100dvh-16rem)] min-h-64">
+          <div className="pr-4">
+            {data.events.map((e, i) => <Row key={`${e.ts}-${i}`} e={e} onOpen={onOpen} />)}
+          </div>
+        </ScrollArea>
+      )}
+    </>
   );
 }

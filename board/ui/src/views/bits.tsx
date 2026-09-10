@@ -40,7 +40,7 @@ export function Loading({ rows = 4 }: { rows?: number }) {
 export function Problem({ message }: { message: string }) {
   return (
     <div className="flex items-center gap-3 py-6">
-      <Badge variant="destructive">unreachable</Badge>
+      <Badge variant="destructive">error</Badge>
       <span className="text-sm text-muted-foreground">{message}</span>
     </div>
   );

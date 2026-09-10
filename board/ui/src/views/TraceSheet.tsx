@@ -52,7 +52,13 @@ export function TraceSheet({ id, onClose, onOpen }: { id: string | null; onClose
   useEffect(() => {
     setT(null); setErr(null);
     if (!id) return;
-    getJSON<Trace>(`/api/trace/${encodeURIComponent(id)}`).then(setT).catch((e) => setErr(String(e.message ?? e)));
+    // Click a second id while the first is still reading and the CLI can answer
+    // out of order. Only the read this effect started may write to the sheet.
+    let current = true;
+    getJSON<Trace>(`/api/trace/${encodeURIComponent(id)}`)
+      .then((got) => { if (current) setT(got); })
+      .catch((e) => { if (current) setErr(String(e.message ?? e)); });
+    return () => { current = false; };
   }, [id]);
   return (
     <Sheet open={!!id} onOpenChange={(o) => { if (!o) onClose(); }}>

@@ -12,40 +12,47 @@ function Types({ types }: { types: string[] }) {
 
 export function FleetView() {
   const { data, error } = usePoll<Fleet>('/api/fleet');
-  if (error) return <Problem message={error} />;
-  if (!data) return <Loading />;
-  if (data.rings.length === 0) return <Nothing title="No rings" hint="rings new <name>, or rings demo to see one working." />;
+  // A failed poll is news about the reading, not about the fleet: say so above
+  // the last answer instead of replacing it with the failure.
+  if (!data) return error ? <Problem message={error} /> : <Loading />;
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Ring</TableHead><TableHead>State</TableHead><TableHead>Schedule</TableHead>
-          <TableHead>Last run</TableHead><TableHead className="text-right">Today</TableHead>
-          <TableHead>Consumes</TableHead><TableHead>Emits</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {data.rings.map((r) => (
-          <TableRow key={r.ring}>
-            <TableCell className="font-medium">{r.ring}</TableCell>
-            <TableCell><StateBadge state={r.state} /></TableCell>
-            <TableCell className="font-mono text-xs text-muted-foreground">{r.schedule ?? '—'}</TableCell>
-            <TableCell className="whitespace-nowrap">
-              {r.lastEnded === null && r.lastVerdict === null ? (
-                <span className="text-muted-foreground">never run</span>
-              ) : (
-                <>
-                  <StateBadge state={r.lastVerdict} />{' '}
-                  <span className="text-xs text-muted-foreground">{ago(r.lastEnded)}</span>
-                </>
-              )}
-            </TableCell>
-            <TableCell className="text-right tabular-nums"><Count n={r.runsToday} /></TableCell>
-            <TableCell className="space-x-1"><Types types={r.consumes} /></TableCell>
-            <TableCell className="space-x-1"><Types types={r.emits} /></TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+    <>
+      {error && <Problem message={error} />}
+      {data.rings.length === 0 ? (
+        <Nothing title="No rings" hint="rings new <name>, or rings demo to see one working." />
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Ring</TableHead><TableHead>State</TableHead><TableHead>Schedule</TableHead>
+              <TableHead>Last run</TableHead><TableHead className="text-right">Today</TableHead>
+              <TableHead>Consumes</TableHead><TableHead>Emits</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {data.rings.map((r) => (
+              <TableRow key={r.ring}>
+                <TableCell className="font-medium">{r.ring}</TableCell>
+                <TableCell><StateBadge state={r.state} /></TableCell>
+                <TableCell className="font-mono text-xs text-muted-foreground">{r.schedule ?? '—'}</TableCell>
+                <TableCell className="whitespace-nowrap">
+                  {r.lastEnded === null && r.lastVerdict === null ? (
+                    <span className="text-muted-foreground">never run</span>
+                  ) : (
+                    <>
+                      <StateBadge state={r.lastVerdict} />{' '}
+                      <span className="text-xs text-muted-foreground">{ago(r.lastEnded)}</span>
+                    </>
+                  )}
+                </TableCell>
+                <TableCell className="text-right tabular-nums"><Count n={r.runsToday} /></TableCell>
+                <TableCell className="space-x-1"><Types types={r.consumes} /></TableCell>
+                <TableCell className="space-x-1"><Types types={r.emits} /></TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+    </>
   );
 }
