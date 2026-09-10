@@ -440,7 +440,7 @@ shells out to one command's `--json` output and returns it unchanged:
 
 | endpoint | command | view |
 |---|---|---|
-| `/api/fleet` | `rings list --json` | every ring: state, schedule, last verdict, next fire, runs today |
+| `/api/fleet` | `rings list --json` | every ring: state, schedule, last verdict, runs today |
 | `/api/goals` | `rings goals --json` | the funnel per sink |
 | `/api/handoffs` | `rings handoffs --json` | per type: ready, leased, accepted, rejected, dead, oldest ready |
 | `/api/feed` | `rings feed --json` | newest events across the fleet |

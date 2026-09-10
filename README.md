@@ -42,7 +42,11 @@ rings board     # watch it at http://127.0.0.1:7781 (needs node 18+)
 each once, and prints the funnel and the feed. Nothing calls a model; the agents
 are shell scripts. `rings board` shows the same data as a page and re-reads it
 every five seconds. Add that `export` line to your shell's rc file to keep
-`rings` on your PATH. Then:
+`rings` on your PATH.
+
+When you have seen enough, `rm -rf ~/.rings` — your first real ring deserves a
+clean home. Or run the demo somewhere disposable from the start:
+`RINGS_HOME=$(mktemp -d) rings demo`. Then:
 
 ```bash
 rings new nightly-digest                     # your first real ring
