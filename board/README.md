@@ -54,14 +54,15 @@ Server tests, the UI's own tests, typecheck, build, and a check that the committ
 ## Screenshots
 
 ```
-node board/test/shoot.mjs    # from the repo root
+cd board/ui && npx playwright install chromium && npm run shoot
 ```
 
 Four PNGs in `board/docs`: the page in both themes, the page with nothing in it, and
-the page at phone width. The script builds its own fixture homes under `/tmp/rings-fx`
-(`board/test/fixture.sh` builds one of `empty`, `demo`, `stress`), serves each on a
-spare port, shoots, then kills every server and deletes the homes. Playwright is not a
-dependency here; the header of `shoot.mjs` says how to make one copy visible to it.
+the page at phone width. `board/ui/scripts/shoot.mjs` builds its own fixture homes
+under `/tmp/rings-fx` (`board/test/fixture.sh` builds one of `empty`, `demo`,
+`stress`), serves each on a spare port, shoots, then kills every server and deletes
+the homes. Playwright is a devDependency of `board/ui` and of nothing else — the
+board ships without it, and the core has never needed node at all.
 
 ## shadcn/ui
 

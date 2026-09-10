@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// board/test/shoot.mjs — the four screenshots in board/docs, from nothing, in one command.
+// board/ui/scripts/shoot.mjs — the four screenshots in board/docs, from nothing,
+// in one command:
 //
-//   node board/test/shoot.mjs
+//   cd board/ui && npx playwright install chromium && npm run shoot
 //
 // It builds its own fixture homes under /tmp/rings-fx, serves each one on a spare
 // port, shoots, then kills every server and deletes the homes. Nothing is left
@@ -9,13 +10,8 @@
 // live under /tmp on purpose: the trace sheet prints receipt paths verbatim, so a
 // fixture home must not sit under a path that names a person.
 //
-// Playwright is not a dependency of this repo and must not become one — the board
-// ships without it. Node resolves a bare import from the first node_modules above
-// this file, so install one copy where this file can see it and delete it after:
-//
-//   npm i -D playwright && npx playwright install chromium   # from the repo root
-//
-// (NODE_PATH does not help: node's ESM resolver ignores it.)
+// Playwright is a devDependency of board/ui alone. The board ships without it, and
+// nothing in bin/ or lib/ has ever needed node at all.
 import { chromium } from 'playwright';
 import { execFile, spawn } from 'node:child_process';
 import { mkdir, rm } from 'node:fs/promises';
@@ -25,8 +21,8 @@ import { promisify } from 'node:util';
 
 const run = promisify(execFile);
 const HERE = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(HERE, '..', '..');
-const DOCS = join(HERE, '..', 'docs');
+const BOARD = join(HERE, '..', '..');
+const DOCS = join(BOARD, 'docs');
 const FX = '/tmp/rings-fx';
 const PORTS = { demo: 7791, empty: 7792, stress: 7793 };
 
@@ -55,12 +51,12 @@ async function settled(page) {
 async function fixture(kind) {
   const home = join(FX, kind);
   process.stdout.write(`  building ${kind} fixture\n`);
-  await run('bash', [join(HERE, 'fixture.sh'), kind, home], { maxBuffer: 16 * 1024 * 1024 });
+  await run('bash', [join(BOARD, 'test', 'fixture.sh'), kind, home], { maxBuffer: 16 * 1024 * 1024 });
   return home;
 }
 
 function serve(home, port) {
-  const child = spawn(process.execPath, [join(ROOT, 'board', 'server.mjs'), String(port)], {
+  const child = spawn(process.execPath, [join(BOARD, 'server.mjs'), String(port)], {
     env: { ...process.env, RINGS_HOME: home },
     stdio: ['ignore', 'pipe', 'inherit'],
   });
