@@ -17,9 +17,13 @@ npm test --silent || exit 1
 echo "board: typecheck + build"
 npm run build --silent || exit 1
 cd "$ROOT" || exit 1
-if ! git diff --quiet -- board/dist; then
+# git diff sees a changed asset; it does not see a new one. A build that renames
+# a hashed chunk leaves the old file committed and the new file untracked, and
+# only the second check catches that.
+if ! git diff --quiet -- board/dist || [ -n "$(git status --porcelain -- board/dist)" ]; then
   echo "board: committed board/dist does not match a fresh build. Commit the build output."
   git --no-pager diff --stat -- board/dist
+  git status --short -- board/dist
   exit 1
 fi
 echo "board: ok"

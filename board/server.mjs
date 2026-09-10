@@ -30,9 +30,13 @@ const MIME = {
   '.json': 'application/json',
 };
 
+// One command, one answer, or a failure the page can render. The wall clock is
+// here because a CLI that never returns would otherwise hold a request open for
+// as long as the browser will wait: killed at 60s, it comes back non-zero and
+// takes the same path as any other refusal.
 function rings(args) {
   return new Promise((done) => {
-    execFile(RINGS, args, { env: process.env, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(RINGS, args, { env: process.env, maxBuffer: 64 * 1024 * 1024, timeout: 60_000 }, (err, stdout, stderr) => {
       done({ code: err ? (err.code ?? 1) : 0, stdout, stderr });
     });
   });
