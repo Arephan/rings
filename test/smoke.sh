@@ -640,7 +640,12 @@ check "$?" "1" "demo refuses a RINGS_HOME that holds only a hand-written rings.c
 check "$(grep -c 'APEX="mine"' "$H6B/rings.conf")" "1" "and leaves that rings.conf untouched"
 
 # 13. everything parses under bash 3.2, which is what launchd runs
-for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT"/template/hooks/*.sh "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh "$ROOT"/examples/*/types/*/accept.sh; do
+# The same list CI runs shellcheck over and CONTRIBUTING prints. A shell file
+# that is in one of the three and not the others is a file nothing checks.
+for f in "$ROOT/bin/rings" "$ROOT"/lib/*.sh "$ROOT/test/smoke.sh" "$ROOT/test/board.sh" \
+         "$ROOT/board/test/fixture.sh" "$ROOT"/template/hooks/*.sh \
+         "$ROOT"/examples/*/agent.sh "$ROOT"/examples/*/*/agent.sh \
+         "$ROOT"/examples/*/*/hooks/*.sh "$ROOT"/examples/*/types/*/accept.sh; do
   [ -f "$f" ] || continue
   /bin/bash -n "$f" 2>/dev/null || bad "$(basename "$f") does not parse under /bin/bash"
 done
