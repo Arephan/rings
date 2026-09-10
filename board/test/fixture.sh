@@ -19,8 +19,8 @@ export RINGS_HOME="$dir"
 case "$kind" in
   empty) ;;
   demo)
-    cp -R "$ROOT/examples/handoff-demo/." "$dir/"
-    for r in scout bidder closer; do "$ROOT/bin/rings" run "$r" > /dev/null 2>&1; done ;;
+    # The onboarding path itself, so a screenshot shows what a first run shows.
+    "$ROOT/bin/rings" demo > /dev/null ;;
   stress)
     cp -R "$ROOT/examples/handoff-demo/." "$dir/"
     for i in $(seq 1 120); do

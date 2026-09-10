@@ -86,12 +86,15 @@ ring_run() {
     mkdir "$lock"
     echo "$$" > "$lock/pid"
   fi
+  # The trap is the crash net, not the release: it is process-wide, so a caller
+  # that runs three rings in one process would overwrite it twice and leave the
+  # first two locks behind. Every return path below releases the lock by hand.
   # shellcheck disable=SC2064
   trap "rm -rf '$lock'" EXIT
 
   # Everything from here runs with the ring as the working directory, so a
   # runbook and an agent command can both use paths relative to the ring.
-  cd "$dir" || return 2
+  cd "$dir" || { ring_unlock "$lock"; return 2; }
   export RING_DIR="$dir" RING_NAME="$name"
 
   # --- guard: a syntax error in a hook used to be a silent outage, because the
@@ -102,12 +105,14 @@ ring_run() {
     if ! bash -n "$h" 2>"$dir/.guard.err"; then
       ring_log "$log" "GUARD $h will not parse: $(head -1 "$dir/.guard.err")"
       ring_notify "$notify" "$name" "[down] $name: $(basename "$h") will not parse — $(head -1 "$dir/.guard.err")"
+      ring_unlock "$lock"
       return 3
     fi
     # macOS launchd runs /bin/bash 3.2 while most authors test under bash 5.
     if [ -x /bin/bash ] && ! /bin/bash -n "$h" 2>"$dir/.guard.err"; then
       ring_log "$log" "GUARD $h parses under your bash but not /bin/bash: $(head -1 "$dir/.guard.err")"
       ring_notify "$notify" "$name" "[down] $name: $(basename "$h") fails the /bin/bash parse — $(head -1 "$dir/.guard.err")"
+      ring_unlock "$lock"
       return 3
     fi
   done
@@ -242,11 +247,17 @@ this run produced nothing and will be recorded as a failure."
   fi
 
   ring_log "$log" "DONE $verdict"
+  ring_unlock "$lock"
   [ "$verdict" = "pass" ] && return 0
   return 1
 }
 
 # --- helpers -----------------------------------------------------------------
+
+ring_unlock() {
+  # Release a lock ring_run took. Safe to call on a lock that is already gone.
+  rm -rf -- "$1"
+}
 
 # Shared by bin/rings and every lib. RINGS_HOME must be set by the caller.
 each_ring() {

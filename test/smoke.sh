@@ -629,6 +629,8 @@ check "$?" "0" "rings demo runs on an empty RINGS_HOME"
 greps "demo prints the funnel" 'deal.signed@1 *1' "$TMP/demo.out"
 greps "demo prints the feed" 'published prospect.qualified@1' "$TMP/demo.out"
 greps "demo tells you what to do next" 'rings trace' "$TMP/demo.out"
+check "$(find "$H6" -name .lock -type d | wc -l | tr -d ' ')" "0" "demo leaves no lock behind"
+check "$(RINGS_HOME="$H6" "$RINGS" list --json | grep -c '"running"')" "0" "and no ring reads as running"
 RINGS_HOME="$H6" "$RINGS" demo > "$TMP/demo2.out" 2>&1
 check "$?" "1" "demo refuses a RINGS_HOME that already has rings"
 greps "and says how to try it elsewhere" 'RINGS_HOME=' "$TMP/demo2.out"

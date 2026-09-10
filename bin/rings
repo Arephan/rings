@@ -1052,7 +1052,9 @@ cmd_demo() {
   chmod +x "$RINGS_HOME"/*/agent.sh "$RINGS_HOME"/types/*/accept.sh 2>/dev/null
   echo "three rings in $RINGS_HOME: scout → bidder → closer. Running each once."
   for r in scout bidder closer; do
-    if ring_run "$RINGS_HOME/$r" > /dev/null 2>&1; then
+    # A subshell per ring, so each run's EXIT trap fires on its own lock instead
+    # of the last one overwriting the two before it.
+    if ( ring_run "$RINGS_HOME/$r" ) > /dev/null 2>&1; then
       echo "  $r  pass"
     else
       echo "  $r  did not pass — rings status $r"
