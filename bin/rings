@@ -290,7 +290,7 @@ DANG
   # Handoffs: the spool is checked across the fleet, like contracts.
   local items dels chain t sink outcome cnt ready leased acc rej dead oldest gated
   local ring_name ddir f state created ts age limit nd ids since m id ninv nrc
-  local now cutoff spool subs cand
+  local now cutoff spool subs cand declared
   items=$(ho_scan_items)
   dels=$(ho_scan_deliveries)
   # ho_chain_types re-reads rings.conf in a subshell per sink; read it once.
@@ -306,10 +306,16 @@ SUM
     fi
   done
   now=$(date +%s)
+  # $chain already holds every declared type; testing against it beats a
+  # re-derive (a fork per type) for each ring's CONSUMES/EMITS.
+  declared=" $(printf '%s\n' "$chain" | cut -f1 | tr '\n' ' ') "
   for d in $(each_ring); do
     ring_name=$(basename "$d")
     for t in $(ho_ring_types "$d" CONSUMES) $(ho_ring_types "$d" EMITS); do
-      ho_type_declared "$t" || doctor_note dangling "$ring_name names $t, which no CHAIN_ line in rings.conf declares"
+      case "$declared" in
+        *" $t "*) ;;
+        *) doctor_note dangling "$ring_name names $t, which no CHAIN_ line in rings.conf declares" ;;
+      esac
     done
     ddir="$(ho_spool)/deliveries/$ring_name"
     [ -d "$ddir" ] || continue
@@ -324,9 +330,17 @@ SUM
     while IFS="$(printf '\t')" read -r _ id _ _ state _ created _ _; do
       [ -n "$id" ] || continue
       if [ "$state" = "dead" ]; then nd=$((nd + 1)); ids="$ids $id"; fi
-      if [ "$state" = "ready" ] && [ -n "$cutoff" ] && [ "$created" \< "$cutoff" ]; then
-        age=$(( now - $(ho_iso_to_epoch "$created") ))
-        doctor_note backlog "$ring_name has had $id ready for $((age / 3600))h — more than three of its intervals"
+      if [ "$state" = "ready" ] && [ -n "$cutoff" ]; then
+        case "$created" in
+          [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z) ;;
+          *)
+            doctor_note backlog "$ring_name has a delivery record with an unreadable created= (id $id) — repair or rings retry it"
+            continue ;;
+        esac
+        if [ "$created" \< "$cutoff" ]; then
+          age=$(( now - $(ho_iso_to_epoch "$created") ))
+          doctor_note backlog "$ring_name has had $id ready for $((age / 3600))h — more than three of its intervals"
+        fi
       fi
     done <<RING_DELS
 $(printf '%s\n' "$dels" | awk -F'\t' -v r="$ring_name" '$1 == r')

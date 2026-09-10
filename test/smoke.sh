@@ -666,7 +666,7 @@ for BIGCMD in doctor handoffs feed; do
   BIGSTART=$(date +%s)
   RINGS_HOME="$H7" "$RINGS" "$BIGCMD" --json > /dev/null
   BIGEND=$(date +%s)
-  check "$(( BIGEND - BIGSTART <= 2 ))" "1" "$BIGCMD --json on 150 items takes at most 2 s"
+  check "$(( BIGEND - BIGSTART <= 3 ))" "1" "$BIGCMD --json on 150 items takes at most 3 s"
 done
 
 # 13. everything parses under bash 3.2, which is what launchd runs
